@@ -3,11 +3,13 @@ import torch.nn as nn
 
 
 def create_survloss(loss, argv):
-    assert loss in ['survple', 'survmle'], 'Unexpected loss. Only supprt survple and survmle.'
+    assert loss in ['survple', 'survmle', 'survnll'], 'Unexpected loss. Only supprt survple and survmle.'
     if loss == 'survmle':
         return SurvMLE(**argv)
     elif loss == 'survple':
         return SurvPLE()
+    elif loss == 'survnll':
+        return NLLLoss()
 
 
 class SurvMLE(nn.Module):
@@ -97,3 +99,23 @@ def loss_reg_l1(coef):
         else:
             return coef * sum([torch.abs(W).sum() for W in model_params])
     return func
+
+class NLLLoss(nn.Module):
+    def __init__(self):
+        super(NLLLoss, self).__init__()
+    def forward(self, y, y_hat):
+         
+        T = torch.abs(y).view(-1)
+        E = (y > 0).int()
+        idx = T.sort(descending=True)[1]
+        events = E[idx]
+        risk_scores = y_hat[idx]
+        events = events.float()
+        events = events.view(-1)
+        risk_scores = risk_scores.view(-1)
+        
+        uncensored_likelihood = risk_scores - risk_scores.exp().cumsum(0).log()
+        censored_likelihood = uncensored_likelihood * events
+        num_observed_events = events.sum()
+        neg_likelihood = -censored_likelihood.sum()/num_observed_events
+        return neg_likelihood

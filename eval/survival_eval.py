@@ -10,7 +10,7 @@ from .metrics import concordance_index_censored as ci
 
 def concordance_index(
     y_true: Union[Tensor, ndarray], 
-    y_pred: Union[Tensor, ndarray]
+    y_pred: Union[Tensor, ndarray],
 ) -> float:
     """Compute the concordance-index value.
 
@@ -33,7 +33,7 @@ def concordance_index(
         y_true = np.squeeze(y_true)
         y_pred = np.squeeze(y_pred)
         t = np.abs(y_true)
-        e = (y_true > 0).astype(np.int32)
+        e = (y_true > 0).astype(bool)
         return ci(e, t, -y_pred, tied_tol=1e-08)[0]
     else: # discrete model
         y_t, y_e = y_true[:, 0], (1 - y_true[:, 1]).astype(np.bool_)

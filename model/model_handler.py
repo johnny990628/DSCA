@@ -5,6 +5,7 @@ import numpy as np
 from torch.optim import lr_scheduler
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
+from torch.nn import DataParallel
 
 from .HierNet import WSIGenericNet, WSIHierNet, WSIGenericCAPNet
 from .model_utils import init_weights
@@ -13,6 +14,7 @@ from loss import create_survloss, loss_reg_l1
 from optim import create_optimizer
 from dataset import prepare_dataset
 from eval import evaluator
+from loss.loss_interface import NLLLoss
 
 
 class MyHandler(object):
@@ -47,7 +49,7 @@ class MyHandler(object):
             self.model.apply(init_weights) # model parameter init
             print(self.model)
         elif cfg['task'] == 'GenericCAPSurv':
-            cfg['magnification'] = 'x5_x20'
+            cfg['magnification'] = '5x20x'
             cfg_emb_backbone = SimpleNamespace(in_dim=dims[0], out_dim=dims[1], scale=4, dropout=cfg['dropout'], dw_conv=cfg['emb_dw_conv'], ksize=cfg['emb_ksize'])
             cfg_tra_backbone = SimpleNamespace(d_model=dims[1], d_out=dims[2], nhead=cfg['tra_nhead'], dropout=cfg['dropout'], num_layers=cfg['tra_num_layers'],
                 ksize=cfg['tra_ksize'], dw_conv=cfg['tra_dw_conv'], epsilon=cfg['tra_epsilon'])
@@ -57,8 +59,11 @@ class MyHandler(object):
             )
             self.model.apply(init_weights) # model parameter init
         elif cfg['task'] == 'HierSurv':
+            scales = cfg['magnification'].split('-')
+            scale = int(int(scales[1]) / int(scales[0]))
+            print(f"Scale for magnifications {scales} is {scale}")
             cfg_x20_emb = SimpleNamespace(backbone=cfg['emb_x20_backbone'], 
-                in_dim=dims[0], out_dim=dims[1], scale=4, dropout=cfg['dropout'], dw_conv=cfg['emb_x20_dw_conv'], ksize=cfg['emb_x20_ksize'])
+                in_dim=dims[0], out_dim=dims[1], scale=scale, dropout=cfg['dropout'], dw_conv=cfg['emb_x20_dw_conv'], ksize=cfg['emb_x20_ksize'])
             cfg_x5_emb = SimpleNamespace(backbone=cfg['emb_x5_backbone'], 
                 in_dim=dims[0], out_dim=dims[1], scale=1, dropout=cfg['dropout'], dw_conv=False, ksize=cfg['emb_x5_ksize'])
             cfg_tra_backbone = SimpleNamespace(backbone=cfg['tra_backbone'], ksize=cfg['tra_ksize'], dw_conv=cfg['tra_dw_conv'],
@@ -69,7 +74,11 @@ class MyHandler(object):
             )
         else:
             raise ValueError(f"Expected HierSurv/GenericSurv, but got {cfg['task']}")
-        self.model = self.model.cuda()
+        if torch.cuda.device_count()>1:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            self.model = DataParallel(self.model).to(device)
+        else:
+            self.model = self.model.cuda()
         print_network(self.model)
         self.model_pe = cfg['tra_position_emb']
         print("[model] Transformer Position Embedding: {}".format('Yes' if self.model_pe else 'No'))
@@ -84,7 +93,9 @@ class MyHandler(object):
         # 1. Early stopping: patience = 30
         # 2. LR scheduler: lr * 0.5 if val_loss is not decreased in 10 epochs.
         if cfg['es_patience'] is not None:
-            self.early_stop = EarlyStopping(warmup=cfg['es_warmup'], patience=cfg['es_patience'], start_epoch=cfg['es_start_epoch'], verbose=cfg['es_verbose'])
+            # self.early_stop = EarlyStopping(warmup=cfg['es_warmup'], patience=cfg['es_patience'], start_epoch=cfg['es_start_epoch'], verbose=cfg['es_verbose'])
+            self.early_stop = Monitor_CIndex(warmup=cfg['es_warmup'], patience=cfg['es_patience'], start_epoch=cfg['es_start_epoch'], verbose=cfg['es_verbose'])
+
         else:
             self.early_stop = None
         self.steplr = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10, verbose=True)
@@ -185,7 +196,7 @@ class MyHandler(object):
                         continue
                     val_cltor = self.test_model(self.model, val_loaders[k], self.cfg['task'], model_pe=self.model_pe)
                     # If it is at eval mode, then set alpha in SurvMLE to 0
-                    met_ci, met_loss = evaluator(val_cltor['y'], val_cltor['y_hat'], metrics='cindex'), self.loss(val_cltor['y'], val_cltor['y_hat'], cur_alpha=0.0)
+                    met_ci, met_loss = evaluator(val_cltor['y'], val_cltor['y_hat'], metrics='cindex'), self.loss(val_cltor['y'], val_cltor['y_hat'])
                     self.writer.add_scalar('loss/%s_overall_loss'%k, met_loss, epoch+1)
                     self.writer.add_scalar('c_index/%s_ci'%k, met_ci, epoch+1)
                     print("[training] {} epoch {}, loss: {:.8f}, c_index: {:.5f}".format(k, epoch+1, met_loss, met_ci))
@@ -229,7 +240,6 @@ class MyHandler(object):
                 y_hat = self.model(fx, fx5, cx5)
             elif self.cfg['task'] == 'GenericSurv':
                 y_hat = self.model(fx, cx5)
-
             # PLE: y_hat.shape = (B, 1),    y.shape = (B, 1)
             # MLE: y_hat.shape = (B, BINS), y.shape = (B, 2)
             collector = collect_tensor(collector, y.detach().cpu(), y_hat.detach().cpu())
@@ -244,7 +254,6 @@ class MyHandler(object):
                 
                 # 2.1 zero gradients buffer
                 self.optimizer.zero_grad()
-                
                 # 2.2 calculate loss
                 loss = self.loss(bp_collector['y'], bp_collector['y_hat'])
                 loss += self.loss_l1(self.model.parameters())

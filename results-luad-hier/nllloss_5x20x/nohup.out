@@ -1,0 +1,380 @@
+
+**************** MODEL CONFIGURATION ****************
+alpha                    -->   0.1
+batch_size               -->   1
+bins_discrete            -->   4
+bp_every_iters           -->   270
+cuda_id                  -->   0
+dataset_name             -->   tcga_luad
+dims                     -->   512-256-256-1
+dropout                  -->   0.6
+emb_x20_backbone         -->   capool
+emb_x20_dw_conv          -->   False
+emb_x20_ksize            -->   3
+emb_x5_backbone          -->   conv1d
+emb_x5_ksize             -->   5
+epochs                   -->   150
+es_patience              -->   30
+es_start_epoch           -->   0
+es_verbose               -->   True
+es_warmup                -->   0
+experiment               -->   sim
+feat_format              -->   pt
+fusion                   -->   fusion
+join                     -->   post
+label_discrete           -->   False
+loss                     -->   survnll
+lr                       -->   8e-05
+magnification            -->   x5_x20
+monitor_metrics          -->   loss
+no_cuda                  -->   False
+num_patch_sampling       -->   -1
+num_workers              -->   4
+opt                      -->   adam
+opt_betas                -->   None
+opt_eps                  -->   None
+opt_momentum             -->   None
+path_coordx5             -->   /work/u6658716/TCGA-LUAD/CLAM/PATCHES/New_LUAD/tiles-5x-s448/patches
+path_data_split          -->   ./data_split/tcga_luad/tcga_luad-seed42-fold{}.npz
+path_label               -->   ./data_split/tcga_luad/tcga_luad_path_full.csv
+path_patchx20            -->   /work/u6658716/TCGA-LUAD/CLAM/PATCHES/New_LUAD/tiles-5x-s448/tiles-20x-s448/feats-CONCH/pt_files
+path_patchx5             -->   /work/u6658716/TCGA-LUAD/CLAM/PATCHES/New_LUAD/tiles-5x-s448/feats-CONCH/pt_files
+pool                     -->   gap
+reg_l1                   -->   1e-05
+save_path                -->   ./results-luad-hier/nllloss
+save_prediction          -->   True
+seed                     -->   42
+seed_data_split          -->   [0]
+task                     -->   HierSurv
+tra_backbone             -->   Transformer
+tra_dw_conv              -->   False
+tra_epsilon              -->   0.8
+tra_ksize                -->   3
+tra_nhead                -->   8
+tra_num_layers           -->   1
+tra_position_emb         -->   True
+weight_decay             -->   0.0005
+**************** MODEL CONFIGURATION ****************
+
+
+./results-luad-hier/nllloss-seed_data_split_0
+[setup] seed: 42
+WSIHierNet(
+  (patchx20_embedding_layer): CAPoolPatchEmbedding(
+    (conv_patch_x5): Conv1dPatchEmbedding(
+      (conv): Conv1d(512, 256, kernel_size=(1,), stride=(1,))
+    )
+    (conv): Conv2d(512, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+    (norm): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+    (act): ReLU(inplace=True)
+    (cross_att_pool): MultiheadAttention(
+      (out_proj): NonDynamicallyQuantizableLinear(in_features=256, out_features=256, bias=True)
+    )
+  )
+  (patchx5_embedding_layer): Conv1dPatchEmbedding(
+    (conv): Conv1d(512, 256, kernel_size=(5,), stride=(1,), padding=(2,))
+    (norm): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+  )
+  (patch_encoder_layer): TransformerEncoder(
+    (layers): ModuleList(
+      (0): TransformerEncoderLayer(
+        (self_attn): MultiheadAttention(
+          (out_proj): NonDynamicallyQuantizableLinear(in_features=256, out_features=256, bias=True)
+        )
+        (linear1): Linear(in_features=256, out_features=256, bias=True)
+        (dropout): Dropout(p=0.6, inplace=False)
+        (linear2): Linear(in_features=256, out_features=256, bias=True)
+        (norm1): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+        (norm2): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+        (dropout1): Dropout(p=0.6, inplace=False)
+        (dropout2): Dropout(p=0.6, inplace=False)
+      )
+    )
+  )
+  (patch_encoder_layer_parallel): TransformerEncoder(
+    (layers): ModuleList(
+      (0): TransformerEncoderLayer(
+        (self_attn): MultiheadAttention(
+          (out_proj): NonDynamicallyQuantizableLinear(in_features=256, out_features=256, bias=True)
+        )
+        (linear1): Linear(in_features=256, out_features=256, bias=True)
+        (dropout): Dropout(p=0.6, inplace=False)
+        (linear2): Linear(in_features=256, out_features=256, bias=True)
+        (norm1): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+        (norm2): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+        (dropout1): Dropout(p=0.6, inplace=False)
+        (dropout2): Dropout(p=0.6, inplace=False)
+      )
+    )
+  )
+  (pool): GAPool(
+    (fc1): Sequential(
+      (0): Linear(in_features=256, out_features=256, bias=True)
+      (1): Tanh()
+      (2): Dropout(p=0.25, inplace=False)
+    )
+    (score): Sequential(
+      (0): Linear(in_features=256, out_features=256, bias=True)
+      (1): Sigmoid()
+      (2): Dropout(p=0.25, inplace=False)
+    )
+    (fc2): Linear(in_features=256, out_features=1, bias=True)
+  )
+  (out_layer): Sequential(
+    (0): Linear(in_features=256, out_features=128, bias=True)
+    (1): ReLU(inplace=True)
+    (2): Dropout(p=0.6, inplace=False)
+    (3): Linear(in_features=128, out_features=1, bias=True)
+  )
+)
+Total number of parameters: 3187458
+Total number of trainable parameters: 3187458
+[model] Transformer Position Embedding: Yes
+[setup] L1 loss with coef=1e-05
+[setup] optimizer: namespace(lr=8e-05, momentum=None, opt='adam', opt_betas=None, opt_eps=None, weight_decay=0.0005)
+[exec] start experiment sim on HierSurv.
+[exec] read patient IDs from ./data_split/tcga_luad/tcga_luad-seed42-fold0.npz
+[surv label] at patient level
+	min/avg/median/max time = 0.0/896.69/658.0/7248.0
+	ratio of event = 0.35933806146572106
+[surv label] to continuous
+Class WSIPatchDataset: #Patients = 270
+[surv label] at patient level
+	min/avg/median/max time = 0.0/896.69/658.0/7248.0
+	ratio of event = 0.35933806146572106
+[surv label] to continuous
+Class WSIPatchDataset: #Patients = 68
+[surv label] at patient level
+	min/avg/median/max time = 0.0/896.69/658.0/7248.0
+	ratio of event = 0.35933806146572106
+[surv label] to continuous
+Class WSIPatchDataset: #Patients = 85
+[training] 150 epochs, with early stopping on validation.
+/home/u6658716/.local/lib/python3.8/site-packages/torch/optim/lr_scheduler.py:60: UserWarning: The verbose parameter is deprecated. Please use get_last_lr() to access the learning rate.
+  warnings.warn(
+[training epoch] training batch 270, loss: 5.386548
+[training] training epoch 1, avg. batch loss: 5.38654804, loss: 4.76991892, c_index: 0.47306
+[training] validation epoch 1, loss: 3.42406464, c_index: 0.50558
+[training] test epoch 1, loss: 3.50582600, c_index: 0.42409
+Validation loss decreased (inf --> 3.424065).  Saving model ...
+[training epoch] training batch 270, loss: 5.349024
+[training] training epoch 2, avg. batch loss: 5.34902430, loss: 4.73253536, c_index: 0.46994
+[training] validation epoch 2, loss: 3.42290783, c_index: 0.49107
+[training] test epoch 2, loss: 3.51199126, c_index: 0.41752
+Validation loss decreased (3.424065 --> 3.422908).  Saving model ...
+[training epoch] training batch 270, loss: 5.315458
+[training] training epoch 3, avg. batch loss: 5.31545782, loss: 4.69952440, c_index: 0.43214
+[training] validation epoch 3, loss: 3.42173862, c_index: 0.48549
+[training] test epoch 3, loss: 3.51351094, c_index: 0.43650
+Validation loss decreased (3.422908 --> 3.421739).  Saving model ...
+[training epoch] training batch 270, loss: 5.284365
+[training] training epoch 4, avg. batch loss: 5.28436470, loss: 4.66894054, c_index: 0.38811
+[training] validation epoch 4, loss: 3.42007256, c_index: 0.47545
+[training] test epoch 4, loss: 3.52062345, c_index: 0.44380
+Validation loss decreased (3.421739 --> 3.420073).  Saving model ...
+[training epoch] training batch 270, loss: 5.349568
+[training] training epoch 5, avg. batch loss: 5.34956837, loss: 4.73451042, c_index: 0.44373
+[training] validation epoch 5, loss: 3.41566777, c_index: 0.46317
+[training] test epoch 5, loss: 3.52708530, c_index: 0.43504
+Validation loss decreased (3.420073 --> 3.415668).  Saving model ...
+[training epoch] training batch 270, loss: 5.336018
+[training] training epoch 6, avg. batch loss: 5.33601761, loss: 4.72129297, c_index: 0.42244
+[training] validation epoch 6, loss: 3.40872741, c_index: 0.45312
+[training] test epoch 6, loss: 3.53294683, c_index: 0.44672
+Validation loss decreased (3.415668 --> 3.408727).  Saving model ...
+[training epoch] training batch 270, loss: 5.275423
+[training] training epoch 7, avg. batch loss: 5.27542257, loss: 4.66137838, c_index: 0.39224
+[training] validation epoch 7, loss: 3.40501666, c_index: 0.44643
+[training] test epoch 7, loss: 3.54198670, c_index: 0.44891
+Validation loss decreased (3.408727 --> 3.405017).  Saving model ...
+[training epoch] training batch 270, loss: 5.255346
+[training] training epoch 8, avg. batch loss: 5.25534630, loss: 4.64164257, c_index: 0.36928
+[training] validation epoch 8, loss: 3.40865493, c_index: 0.44308
+[training] test epoch 8, loss: 3.55404520, c_index: 0.45109
+EarlyStopping counter: 1 out of 30
+[training epoch] training batch 270, loss: 5.235968
+[training] training epoch 9, avg. batch loss: 5.23596811, loss: 4.62259245, c_index: 0.34183
+[training] validation epoch 9, loss: 3.41302371, c_index: 0.43973
+[training] test epoch 9, loss: 3.56276846, c_index: 0.45839
+EarlyStopping counter: 2 out of 30
+[training epoch] training batch 270, loss: 5.243071
+[training] training epoch 10, avg. batch loss: 5.24307060, loss: 4.63028765, c_index: 0.34828
+[training] validation epoch 10, loss: 3.40993905, c_index: 0.43080
+[training] test epoch 10, loss: 3.57226443, c_index: 0.45912
+EarlyStopping counter: 3 out of 30
+[training epoch] training batch 270, loss: 5.156050
+[training] training epoch 11, avg. batch loss: 5.15605021, loss: 4.54405403, c_index: 0.32061
+[training] validation epoch 11, loss: 3.40757585, c_index: 0.42076
+[training] test epoch 11, loss: 3.58163738, c_index: 0.45620
+EarlyStopping counter: 4 out of 30
+[training epoch] training batch 270, loss: 5.189908
+[training] training epoch 12, avg. batch loss: 5.18990803, loss: 4.57766104, c_index: 0.33285
+[training] validation epoch 12, loss: 3.40383434, c_index: 0.41629
+[training] test epoch 12, loss: 3.59082818, c_index: 0.46058
+Validation loss decreased (3.405017 --> 3.403834).  Saving model ...
+[training epoch] training batch 270, loss: 5.161180
+[training] training epoch 13, avg. batch loss: 5.16117954, loss: 4.54955053, c_index: 0.30975
+[training] validation epoch 13, loss: 3.39927673, c_index: 0.40737
+[training] test epoch 13, loss: 3.60115099, c_index: 0.46204
+Validation loss decreased (3.403834 --> 3.399277).  Saving model ...
+[training epoch] training batch 270, loss: 5.135192
+[training] training epoch 14, avg. batch loss: 5.13519192, loss: 4.52442884, c_index: 0.31083
+[training] validation epoch 14, loss: 3.40114880, c_index: 0.41071
+[training] test epoch 14, loss: 3.60701585, c_index: 0.46423
+EarlyStopping counter: 1 out of 30
+[training epoch] training batch 270, loss: 5.193037
+[training] training epoch 15, avg. batch loss: 5.19303703, loss: 4.58214092, c_index: 0.33082
+[training] validation epoch 15, loss: 3.40442586, c_index: 0.40737
+[training] test epoch 15, loss: 3.60953712, c_index: 0.46204
+EarlyStopping counter: 2 out of 30
+[training epoch] training batch 270, loss: 5.121914
+[training] training epoch 16, avg. batch loss: 5.12191391, loss: 4.51190376, c_index: 0.31279
+[training] validation epoch 16, loss: 3.41318417, c_index: 0.40513
+[training] test epoch 16, loss: 3.61621785, c_index: 0.46350
+EarlyStopping counter: 3 out of 30
+[training epoch] training batch 270, loss: 5.094311
+[training] training epoch 17, avg. batch loss: 5.09431124, loss: 4.48460865, c_index: 0.29266
+[training] validation epoch 17, loss: 3.42408824, c_index: 0.40848
+[training] test epoch 17, loss: 3.62399101, c_index: 0.46569
+EarlyStopping counter: 4 out of 30
+[training epoch] training batch 270, loss: 5.132410
+[training] training epoch 18, avg. batch loss: 5.13240957, loss: 4.52313852, c_index: 0.32727
+[training] validation epoch 18, loss: 3.43129730, c_index: 0.41183
+[training] test epoch 18, loss: 3.63364410, c_index: 0.46423
+EarlyStopping counter: 5 out of 30
+[training epoch] training batch 270, loss: 5.132635
+[training] training epoch 19, avg. batch loss: 5.13263464, loss: 4.52391291, c_index: 0.30946
+[training] validation epoch 19, loss: 3.43040538, c_index: 0.40290
+[training] test epoch 19, loss: 3.64540219, c_index: 0.46569
+EarlyStopping counter: 6 out of 30
+[training epoch] training batch 270, loss: 5.102803
+[training] training epoch 20, avg. batch loss: 5.10280323, loss: 4.49453783, c_index: 0.30613
+[training] validation epoch 20, loss: 3.42510915, c_index: 0.40513
+[training] test epoch 20, loss: 3.65895271, c_index: 0.47153
+EarlyStopping counter: 7 out of 30
+[training epoch] training batch 270, loss: 5.095776
+[training] training epoch 21, avg. batch loss: 5.09577560, loss: 4.48802853, c_index: 0.30395
+[training] validation epoch 21, loss: 3.42223907, c_index: 0.40290
+[training] test epoch 21, loss: 3.67533803, c_index: 0.47007
+EarlyStopping counter: 8 out of 30
+[training epoch] training batch 270, loss: 5.118256
+[training] training epoch 22, avg. batch loss: 5.11825562, loss: 4.51077414, c_index: 0.29939
+[training] validation epoch 22, loss: 3.42130113, c_index: 0.39955
+[training] test epoch 22, loss: 3.69624567, c_index: 0.47591
+EarlyStopping counter: 9 out of 30
+[training epoch] training batch 270, loss: 5.064130
+[training] training epoch 23, avg. batch loss: 5.06413031, loss: 4.45697403, c_index: 0.28426
+[training] validation epoch 23, loss: 3.42705274, c_index: 0.39286
+[training] test epoch 23, loss: 3.71788192, c_index: 0.47883
+EarlyStopping counter: 10 out of 30
+[training epoch] training batch 270, loss: 5.069961
+[training] training epoch 24, avg. batch loss: 5.06996107, loss: 4.46335554, c_index: 0.29403
+[training] validation epoch 24, loss: 3.43126988, c_index: 0.39062
+[training] test epoch 24, loss: 3.73617458, c_index: 0.47810
+EarlyStopping counter: 11 out of 30
+[training epoch] training batch 270, loss: 5.048931
+[training] training epoch 25, avg. batch loss: 5.04893064, loss: 4.44262505, c_index: 0.28071
+[training] validation epoch 25, loss: 3.43453217, c_index: 0.39062
+[training] test epoch 25, loss: 3.74179745, c_index: 0.47956
+EarlyStopping counter: 12 out of 30
+[training epoch] training batch 270, loss: 5.072044
+[training] training epoch 26, avg. batch loss: 5.07204437, loss: 4.46595764, c_index: 0.28230
+[training] validation epoch 26, loss: 3.43733120, c_index: 0.38728
+[training] test epoch 26, loss: 3.74647880, c_index: 0.47664
+EarlyStopping counter: 13 out of 30
+[training epoch] training batch 270, loss: 5.018888
+[training] training epoch 27, avg. batch loss: 5.01888752, loss: 4.41334915, c_index: 0.28353
+[training] validation epoch 27, loss: 3.44222450, c_index: 0.38728
+[training] test epoch 27, loss: 3.75025272, c_index: 0.47737
+EarlyStopping counter: 14 out of 30
+[training epoch] training batch 270, loss: 4.991115
+[training] training epoch 28, avg. batch loss: 4.99111462, loss: 4.38553667, c_index: 0.25319
+[training] validation epoch 28, loss: 3.44606519, c_index: 0.38839
+[training] test epoch 28, loss: 3.75301051, c_index: 0.47883
+EarlyStopping counter: 15 out of 30
+[training epoch] training batch 270, loss: 5.046419
+[training] training epoch 29, avg. batch loss: 5.04641867, loss: 4.44115639, c_index: 0.27853
+[training] validation epoch 29, loss: 3.44921589, c_index: 0.38616
+[training] test epoch 29, loss: 3.75828576, c_index: 0.47956
+EarlyStopping counter: 16 out of 30
+[training epoch] training batch 270, loss: 4.998239
+[training] training epoch 30, avg. batch loss: 4.99823904, loss: 4.39291430, c_index: 0.26832
+[training] validation epoch 30, loss: 3.45453262, c_index: 0.38504
+[training] test epoch 30, loss: 3.76292181, c_index: 0.48394
+EarlyStopping counter: 17 out of 30
+[training epoch] training batch 270, loss: 4.980469
+[training] training epoch 31, avg. batch loss: 4.98046875, loss: 4.37552023, c_index: 0.24884
+[training] validation epoch 31, loss: 3.46100688, c_index: 0.38504
+[training] test epoch 31, loss: 3.76469827, c_index: 0.48759
+EarlyStopping counter: 18 out of 30
+[training epoch] training batch 270, loss: 4.994585
+[training] training epoch 32, avg. batch loss: 4.99458456, loss: 4.38995886, c_index: 0.25826
+[training] validation epoch 32, loss: 3.46705127, c_index: 0.38951
+[training] test epoch 32, loss: 3.76641726, c_index: 0.48905
+EarlyStopping counter: 19 out of 30
+[training epoch] training batch 270, loss: 4.983403
+[training] training epoch 33, avg. batch loss: 4.98340273, loss: 4.37873983, c_index: 0.24942
+[training] validation epoch 33, loss: 3.46831608, c_index: 0.38951
+[training] test epoch 33, loss: 3.76783848, c_index: 0.49051
+EarlyStopping counter: 20 out of 30
+[training epoch] training batch 270, loss: 4.997510
+[training] training epoch 34, avg. batch loss: 4.99750996, loss: 4.39313269, c_index: 0.26477
+[training] validation epoch 34, loss: 3.46823382, c_index: 0.38951
+[training] test epoch 34, loss: 3.76858187, c_index: 0.49270
+EarlyStopping counter: 21 out of 30
+[training epoch] training batch 270, loss: 4.973310
+[training] training epoch 35, avg. batch loss: 4.97330999, loss: 4.36931658, c_index: 0.25036
+[training] validation epoch 35, loss: 3.46799660, c_index: 0.39397
+[training] test epoch 35, loss: 3.76735163, c_index: 0.49489
+EarlyStopping counter: 22 out of 30
+[training epoch] training batch 270, loss: 4.976879
+[training] training epoch 36, avg. batch loss: 4.97687864, loss: 4.37280989, c_index: 0.25702
+[training] validation epoch 36, loss: 3.46895719, c_index: 0.39286
+[training] test epoch 36, loss: 3.76712990, c_index: 0.49489
+EarlyStopping counter: 23 out of 30
+[training epoch] training batch 270, loss: 4.943348
+[training] training epoch 37, avg. batch loss: 4.94334841, loss: 4.33968067, c_index: 0.24211
+[training] validation epoch 37, loss: 3.46985888, c_index: 0.39621
+[training] test epoch 37, loss: 3.76669502, c_index: 0.49051
+EarlyStopping counter: 24 out of 30
+[training epoch] training batch 270, loss: 4.996020
+[training] training epoch 38, avg. batch loss: 4.99602032, loss: 4.39264488, c_index: 0.25333
+[training] validation epoch 38, loss: 3.47083402, c_index: 0.39621
+[training] test epoch 38, loss: 3.76633072, c_index: 0.49124
+EarlyStopping counter: 25 out of 30
+[training epoch] training batch 270, loss: 4.935191
+[training] training epoch 39, avg. batch loss: 4.93519115, loss: 4.33174133, c_index: 0.23841
+[training] validation epoch 39, loss: 3.47501254, c_index: 0.39621
+[training] test epoch 39, loss: 3.76676702, c_index: 0.48686
+EarlyStopping counter: 26 out of 30
+[training epoch] training batch 270, loss: 4.890039
+[training] training epoch 40, avg. batch loss: 4.89003944, loss: 4.28621912, c_index: 0.23008
+[training] validation epoch 40, loss: 3.48091412, c_index: 0.39509
+[training] test epoch 40, loss: 3.76910067, c_index: 0.48467
+EarlyStopping counter: 27 out of 30
+[training epoch] training batch 270, loss: 4.921535
+[training] training epoch 41, avg. batch loss: 4.92153549, loss: 4.31811762, c_index: 0.25232
+[training] validation epoch 41, loss: 3.48871517, c_index: 0.39397
+[training] test epoch 41, loss: 3.77235413, c_index: 0.48467
+EarlyStopping counter: 28 out of 30
+[training epoch] training batch 270, loss: 4.944795
+[training] training epoch 42, avg. batch loss: 4.94479465, loss: 4.34148645, c_index: 0.24884
+[training] validation epoch 42, loss: 3.49527931, c_index: 0.39509
+[training] test epoch 42, loss: 3.77697515, c_index: 0.48394
+EarlyStopping counter: 29 out of 30
+[training epoch] training batch 270, loss: 4.899023
+[training] training epoch 43, avg. batch loss: 4.89902258, loss: 4.29576969, c_index: 0.24674
+[training] validation epoch 43, loss: 3.50131202, c_index: 0.39397
+[training] test epoch 43, loss: 3.78141284, c_index: 0.48394
+EarlyStopping counter: 30 out of 30
+/work/u6658716/TCGA-LUAD/DSCA/model/model_handler.py:265: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  model.load_state_dict(torch.load(checkpoint))
+(270, 1) (270, 1)
+/work/u6658716/TCGA-LUAD/DSCA/model/model_handler.py:265: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  model.load_state_dict(torch.load(checkpoint))
+(68, 1) (68, 1)
+/work/u6658716/TCGA-LUAD/DSCA/model/model_handler.py:265: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  model.load_state_dict(torch.load(checkpoint))
+(85, 1) (85, 1)
+[INFO] Metrics: {'train': [('cindex', 0.2938151796060255), ('loss', tensor(4.4894))], 'validation': [('cindex', 0.40736607142857145), ('loss', tensor(3.3993))], 'test': [('cindex', 0.46204379562043796), ('loss', tensor(3.6012))]}
+

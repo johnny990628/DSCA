@@ -40,7 +40,7 @@ def seed_generator(seed):
     g.manual_seed(seed)
     return g
 
-def collect_tensor(collector, y, y_hat):
+def collect_tensor(collector, y, y_hat, time=None):
     if collector['y'] is None:
         collector['y'] = y
     else:
@@ -50,7 +50,7 @@ def collect_tensor(collector, y, y_hat):
         collector['y_hat'] = y_hat
     else:
         collector['y_hat'] = torch.cat([collector['y_hat'], y_hat], dim=0)
-    
+
     return collector
 
 def to_patient_data(df, at_column='patient_id'):
@@ -195,7 +195,7 @@ def read_nfeats(path: str, dtype: str = 'torch'):
         with h5py.File(path, 'r') as hf:
             nfeats = hf['features'][:]
     elif ext == '.pt':
-        nfeats = torch.load(path, map_location=torch.device('cpu'))
+        nfeats = torch.load(path, map_location=torch.device('cpu'), weights_only=False)
     else:
         raise ValueError(f'not support {ext}')
 

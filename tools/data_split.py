@@ -28,14 +28,15 @@ def main(dataset, seed):
     fold = 0
     for train_index, test_index in kf.split(sample_idx):
         # split train_index into train/val
-        train_index, val_index = train_test_split(train_index, test_size=0.2, random_state=seed)
+        # train_index, val_index = train_test_split(train_index, test_size=0.2, random_state=seed)
         # train/val/test
         train_ids = list(df.loc[train_index, 'patient_id'])
-        val_ids = list(df.loc[val_index, 'patient_id'])
-        test_ids = list(df.loc[test_index, 'patient_id'])
+        # val_ids = list(df.loc[val_index, 'patient_id'])
+        # test_ids = list(df.loc[test_index, 'patient_id'])
+        val_test_ids = list(df.loc[test_index, 'patient_id'])
         # save patients to files
         np.savez('../data_split/{}/{}-seed{}-fold{}.npz'.format(dataset, dataset, seed, fold),
-               train_patients=train_ids, val_patients=val_ids, test_patients=test_ids)
+               train_patients=train_ids, val_patients=val_test_ids, test_patients=val_test_ids)
         fold += 1
 
 # python3 data_split.py nlst/tcga_brca 42

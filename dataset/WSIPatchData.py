@@ -78,6 +78,7 @@ class SurvLabelTransformer(object):
                 
                 pat_idx = self.pat_data[self.pat_data['patient_id'] == pid].index[0]
                 pid2label[pid] = list(self.pat_data.loc[pat_idx, column_label])
+
             else:
                 print('[warning] patient {} not found!'.format(pid))
 
@@ -95,12 +96,13 @@ class WSIPatchDataset(Dataset):
         path_patchx5 (string): Path of patch feature at 5x magnification. 
     """
     def __init__(self, patient_ids, path_patchx20: str, path_patchx5: str, path_coordx5:str, 
-        path_label: str, label_discrete:bool=False, bins_discrete:int=4, feat_format:str='pt'):
+        path_label: str, magnification: list, label_discrete:bool=False, bins_discrete:int=4, feat_format:str='pt'):
         super(WSIPatchDataset, self).__init__()
         self.path_patchx20 = path_patchx20
         self.path_patchx5  = path_patchx5
         self.path_coordx5  = path_coordx5
         self.feat_format   = feat_format
+        self.magnification = magnification
 
         SurvLabel = SurvLabelTransformer(path_label)
         if label_discrete:
@@ -123,8 +125,8 @@ class WSIPatchDataset(Dataset):
     def __getitem__(self, index):
         pid = self.pids[index]
         sids = self.pid2sids[pid]
-
         feats_x20, feats_x5, coors_x5 = [], [], []
+
         for sid in sids:
             fpath_px20 = osp.join(self.path_patchx20, sid + '.' + self.feat_format)
             fpath_px5  = osp.join(self.path_patchx5,  sid + '.' + self.feat_format)
@@ -133,13 +135,14 @@ class WSIPatchDataset(Dataset):
             feats_x20.append(read_nfeats(fpath_px20, dtype='torch'))
             feats_x5.append(read_nfeats(fpath_px5,  dtype='torch'))
             coors_x5.append(read_coords(fpath_cx5, dtype='torch'))
+
         coors_x5 = rearrange_coord(coors_x5, discretization=True)
 
         feats_x20 = torch.cat(feats_x20, dim=0).to(torch.float)
         feats_x5  = torch.cat(feats_x5,  dim=0).to(torch.float)
         coors_x5  = torch.cat(coors_x5,  dim=0).to(torch.int32)
         assert coors_x5.shape[0] == feats_x5.shape[0]
-        assert feats_x20.shape[0] == 16 * feats_x5.shape[0]
+        # assert feats_x20.shape[0] == 16 * feats_x5.shape[0]
 
         y = torch.Tensor(self.pid2label[pid]).to(torch.float)
 

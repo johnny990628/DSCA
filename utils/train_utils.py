@@ -54,7 +54,7 @@ class EarlyStopping:
 
 class Monitor_CIndex:
     """Early stops the training if validation loss doesn't improve after a given patience."""
-    def __init__(self):
+    def __init__(self, warmup=5, patience=15, start_epoch=0, verbose=False):
         """
         Args:
             patience (int): How long to wait after last time validation loss improved.
@@ -63,21 +63,38 @@ class Monitor_CIndex:
             verbose (bool): If True, prints a message for each validation loss improvement. 
                             Default: False
         """
+        self.warmup = warmup
+        self.patience = patience
+        self.start_epoch = start_epoch
+        self.verbose = verbose
+        self.counter = 0
         self.best_score = None
+        self.early_stop = False
+        self.best_score = None
+        self.val_cindex_max = 0
 
-    def __call__(self, val_cindex, model, ckpt_name:str='checkpoint.pt'):
+    def __call__(self, epoch, val_cindex, model, ckpt_name:str='checkpoint.pt'):
 
         score = val_cindex
 
         if self.best_score is None:
             self.best_score = score
-            self.save_checkpoint(model, ckpt_name)
+            self.save_checkpoint(val_cindex, model, ckpt_name)
         elif score > self.best_score:
             self.best_score = score
-            self.save_checkpoint(model, ckpt_name)
+            self.save_checkpoint(val_cindex, model, ckpt_name)
         else:
-            pass
+            self.counter += 1
+            print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            if self.counter >= self.patience and epoch > self.start_epoch:
+                self.early_stop = True
 
-    def save_checkpoint(self, model, ckpt_name):
-        '''Saves model when validation loss decrease.'''
+    def if_stop(self, **kws):
+        return self.early_stop
+
+    def save_checkpoint(self,val_cindex, model, ckpt_name):
+        '''Saves model when validation Cindex increase.'''
+        if self.verbose:
+            print(f'Validation CIndex increased ({self.val_cindex_max:.3f} --> {val_cindex:.3f}).  Saving model ...')
         torch.save(model.state_dict(), ckpt_name)
+        self.val_cindex_max = val_cindex

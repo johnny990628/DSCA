@@ -47,8 +47,8 @@ def get_scaled_attrs(origin_attrs, scale=4):
         'downsampled_level_dim': origin_attrs['downsampled_level_dim'] * scale,
         'level_dim': origin_attrs['level_dim'] * scale,
         'name': origin_attrs['name'],
-        'patch_level': origin_attrs['patch_level'] - 1,
-        'patch_size': origin_attrs['patch_size'],
+        'patch_level': origin_attrs['patch_level'],
+        'patch_size': int(origin_attrs['patch_size']/scale),
     }
     return attrs
 
@@ -76,7 +76,9 @@ def coords_x5_to_x20(path_patchi, path_patcho, patch_scale=4):
     scaled_coords = scaled_coords.astype(np.int64) 
     save_hdf5(path_patcho, {'coords': scaled_coords}, {'coords': scaled_attrs}, mode='w')
 
-def process_coords(dir_read, dir_save):
+def process_coords(dir_read, dir_save, low_mag, high_mag):
+    dir_read = os.path.join(dir_read, 'patches')
+    dir_save = os.path.join(dir_save, 'patches')
     if not osp.exists(dir_save):
         os.makedirs(dir_save)
 
@@ -88,12 +90,15 @@ def process_coords(dir_read, dir_save):
 
         path_read = osp.join(dir_read, fname)
         path_save = osp.join(dir_save, fname)
-        coords_x5_to_x20(path_read, path_save)
+        scale = int(int(high_mag)/int(low_mag))
+        coords_x5_to_x20(path_read, path_save, scale)
 
 # python3 big_to_small_patching.py READ_PATCH_DIR SAVE_PATCH_DIR 
 if __name__ == '__main__':
     READ_PATCH_DIR = sys.argv[1] # full read path to the patch coordinates at level = 2.
     SAVE_PATCH_DIR = sys.argv[2] # full save path to the patch coordinates at level = 1.
-    process_coords(READ_PATCH_DIR, SAVE_PATCH_DIR)
+    LOW_MAG = sys.argv[3]
+    HIGH_MAG = sys.argv[4]
+    process_coords(READ_PATCH_DIR, SAVE_PATCH_DIR, LOW_MAG, HIGH_MAG)
     # at the same time, copy the processing record file to SAVE_PATCH_DIR
     shutil.copy(osp.join(READ_PATCH_DIR, 'process_list_autogen.csv'), SAVE_PATCH_DIR)

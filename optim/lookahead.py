@@ -25,6 +25,7 @@ class Lookahead(Optimizer):
         for name, default in defaults.items():
             for group in self.param_groups:
                 group.setdefault(name, default)
+        
 
     def update_slow(self, group):
         for fast_p in group["params"]:
