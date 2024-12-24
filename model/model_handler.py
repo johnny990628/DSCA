@@ -7,7 +7,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 from torch.nn import DataParallel
 
-from .HierNet import WSIGenericNet, WSIHierNet, WSIGenericCAPNet
+from .HierNet import WSIGenericNet, WSIHierNet, WSIGenericCAPNet, CLAM_Survival
 from .model_utils import init_weights
 from utils import *
 from loss import create_survloss, loss_reg_l1
@@ -59,8 +59,8 @@ class MyHandler(object):
             )
             self.model.apply(init_weights) # model parameter init
         elif cfg['task'] == 'HierSurv':
-            scales = cfg['magnification'].split('-')
-            scale = int(int(scales[1]) / int(scales[0]))
+            scales = list(map(int, cfg['magnification'].split('-')))
+            scale = int(scales[1] / scales[0])
             print(f"Scale for magnifications {scales} is {scale}")
             cfg_x20_emb = SimpleNamespace(backbone=cfg['emb_x20_backbone'], 
                 in_dim=dims[0], out_dim=dims[1], scale=scale, dropout=cfg['dropout'], dw_conv=cfg['emb_x20_dw_conv'], ksize=cfg['emb_x20_ksize'])
@@ -72,11 +72,14 @@ class MyHandler(object):
                 dims, cfg_x20_emb, cfg_x5_emb, cfg_tra_backbone, 
                 dropout=cfg['dropout'], pool=cfg['pool'], join=cfg['join'], fusion=cfg['fusion']
             )
+        elif cfg['task'] == 'clam':
+            self.model = CLAM_Survival(dims=dims)
         else:
             raise ValueError(f"Expected HierSurv/GenericSurv, but got {cfg['task']}")
         if torch.cuda.device_count()>1:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            self.model = DataParallel(self.model).to(device)
+            device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+            self.model = DataParallel(self.model.to(device))
+            print(f"Enable DataParallel Multi GPUs mode")
         else:
             self.model = self.model.cuda()
         print_network(self.model)
@@ -132,6 +135,7 @@ class MyHandler(object):
                 test_pids = None
                 test_loader = None
 
+            
             # Train
             val_name = 'validation'
             val_loaders = {'validation': val_loader, 'test': test_loader}
@@ -226,6 +230,7 @@ class MyHandler(object):
 
         self.model.train()
         i_batch = 0
+
         for fx, fx5, cx5, y in train_loader:
             i_batch += 1
             # 1. forward propagation
@@ -233,19 +238,20 @@ class MyHandler(object):
             fx5 = fx5.cuda()
             cx5 = cx5.cuda() if self.model_pe else None
             y = y.cuda()
-
             if self.cfg['task'] == 'HierSurv':
                 y_hat = self.model(fx, fx5, cx5)
             elif self.cfg['task'] == 'GenericCAPSurv':
                 y_hat = self.model(fx, fx5, cx5)
             elif self.cfg['task'] == 'GenericSurv':
                 y_hat = self.model(fx, cx5)
+            elif self.cfg['task'] == 'clam':
+                y_hat = self.model(fx)
             # PLE: y_hat.shape = (B, 1),    y.shape = (B, 1)
             # MLE: y_hat.shape = (B, BINS), y.shape = (B, 2)
             collector = collect_tensor(collector, y.detach().cpu(), y_hat.detach().cpu())
             bp_collector = collect_tensor(bp_collector, y, y_hat)
 
-            if bp_collector['y'].size(0) % bp_every_iters == 0:
+            if bp_collector['y'].size(0) % bp_every_iters == 0 or bp_collector['y'].size(0)==len(train_loader):
                 # 2. backward propagation
                 if self.cfg['loss'] == 'survple' and torch.sum(bp_collector['y'] > 0).item() <= 0:
                     print("[warning] batch {}, event count <= 0, skipped.".format(i_batch))
@@ -288,5 +294,7 @@ class MyHandler(object):
                     y_hat = model(x1, x2, c)
                 elif task == 'GenericSurv':
                     y_hat = model(x1, c)
+                elif task == 'clam':
+                    y_hat = model(x1)
                 res = collect_tensor(res, y.detach().cpu(), y_hat.detach().cpu())
         return res

@@ -83,6 +83,7 @@ class Monitor_CIndex:
         elif score > self.best_score:
             self.best_score = score
             self.save_checkpoint(val_cindex, model, ckpt_name)
+            self.counter = 0
         else:
             self.counter += 1
             print(f'EarlyStopping counter: {self.counter} out of {self.patience}')

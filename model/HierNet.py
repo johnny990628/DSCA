@@ -293,3 +293,113 @@ class WSIHierNet(nn.Module):
         out = self.out_layer(rep)
 
         return out
+
+
+"""
+Attention Network without Gating (2 fc layers)
+args:
+    L: input feature dimension
+    D: hidden layer dimension
+    dropout: whether to use dropout (p = 0.25)
+    n_classes: number of classes 
+"""
+class Attn_Net(nn.Module):
+
+    def __init__(self, L = 1024, D = 256, dropout = False, n_classes = 1):
+        super(Attn_Net, self).__init__()
+        self.module = [
+            nn.Linear(L, D),
+            nn.Tanh()]
+
+        if dropout:
+            self.module.append(nn.Dropout(0.25))
+
+        self.module.append(nn.Linear(D, n_classes))
+        
+        self.module = nn.Sequential(*self.module)
+    
+    def forward(self, x):
+        return self.module(x), x # N x n_classes
+
+"""
+Attention Network with Sigmoid Gating (3 fc layers)
+args:
+    L: input feature dimension
+    D: hidden layer dimension
+    dropout: whether to use dropout (p = 0.25)
+    n_classes: number of classes 
+"""
+class Attn_Net_Gated(nn.Module):
+    def __init__(self, L = 1024, D = 256, dropout = False, n_classes = 1):
+        super(Attn_Net_Gated, self).__init__()
+        self.attention_a = [
+            nn.Linear(L, D),
+            nn.Tanh()]
+        
+        self.attention_b = [nn.Linear(L, D),
+                            nn.Sigmoid()]
+        if dropout:
+            self.attention_a.append(nn.Dropout(0.25))
+            self.attention_b.append(nn.Dropout(0.25))
+
+        self.attention_a = nn.Sequential(*self.attention_a)
+        self.attention_b = nn.Sequential(*self.attention_b)
+        
+        self.attention_c = nn.Linear(D, n_classes)
+
+    def forward(self, x):
+        a = self.attention_a(x)
+        b = self.attention_b(x)
+        A = a.mul(b)
+        A = self.attention_c(A)  # N x n_classes
+        return A, x
+
+class CLAM_Survival(nn.Module):
+    def __init__(self, gate=True, dropout=True, dims=[512,256,256], **kwargs):
+        super(CLAM_Survival, self).__init__()
+        # self.size_dict = {'xs': [embed_dim, 256, 256], "small": [embed_dim, 512, 256], "big": [embed_dim, 512, 384], 'large': [embed_dim, 1024, 512]}
+        # size = self.size_dict[size_arg]
+        fc = [nn.Linear(dims[0], dims[1]), nn.ReLU()]
+        if dropout:
+            fc.append(nn.Dropout(0.25))
+        if gate:
+            attention_net = Attn_Net_Gated(L=dims[1], D=dims[2], dropout=dropout, n_classes=1)
+        else:
+            attention_net = Attn_Net(L=dims[1], D=dims[2], dropout=dropout, n_classes=1)
+        fc.append(attention_net)
+        self.attention_net = nn.Sequential(*fc)
+        self.out_layer = nn.Sequential(
+                    nn.Linear(dims[1], dims[2]),
+                    nn.ReLU(inplace=True),
+                    nn.Dropout(0.25),
+                    nn.Linear(dims[2], dims[3])
+        )
+
+    @staticmethod
+    def create_positive_targets(length, device):
+        return torch.full((length,), 1, device=device).long()
+
+    @staticmethod
+    def create_negative_targets(length, device):
+        return torch.full((length,), 0, device=device).long()
+
+    def forward(self, h, epoch=0, label=None, instance_eval=False, return_features=False, attention_only=False):
+        device = h.device
+        h=h.squeeze(0)
+        A, h = self.attention_net(h)  # NxK
+        A = torch.transpose(A, 1, 0)  # KxN
+        if attention_only:
+            return A
+        A_raw = A
+        A = F.softmax(A, dim=1)  # softmax over N
+
+        M = torch.mm(A, h)  # A: 1 * N h: N * 512 => M: 1 * 512
+        # M = torch.cat([M, embed_batch], axis=1)
+        risk_score = self.out_layer(M)  
+        # Y_hat = torch.topk(risk_score, 1, dim=1)[1]
+        result = {
+            'risk_score': risk_score,
+            'attention_raw': A_raw,
+            'M': M
+        }
+        return risk_score

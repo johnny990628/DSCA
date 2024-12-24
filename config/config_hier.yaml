@@ -2,15 +2,15 @@ task: HierSurv # use low and high resolutions (dual stream)
 experiment: sim # default sim
 
 # spliting
-seed_data_split: [0, 1, 2, 3, 4] # for 5-fold evaluation
+seed_data_split: 0 # for 5-fold evaluation
 path_data_split: ./data_split/tcga_luad_merged/tcga_luad_merged-seed42-fold{}.npz
 
 # data
 dataset_name: tcga_luad_merged
-magnification: 5-20 # default setting, using low and high resolutions
-path_patchx20: /work/u6658716/TCGA-LUAD/CLAM/PATCHES/New_LUAD/tiles-5x-s224/tiles-20x-s224/feats-CONCH/pt_files
-path_patchx5: /work/u6658716/TCGA-LUAD/CLAM/PATCHES/New_LUAD/tiles-5x-s224/feats-CONCH/pt_files
-path_coordx5: /work/u6658716/TCGA-LUAD/CLAM/PATCHES/New_LUAD/tiles-5x-s224/patches
+magnification: 10-40 # default setting, using low and high resolutions
+path_patchx20: /work/u6658716/TCGA-LUAD/CLAM/PATCHES/New_LUAD/tiles-10x-s448/tiles-40x-s448/feats-RETCCL-s224/pt_files
+path_patchx5: /work/u6658716/TCGA-LUAD/CLAM/PATCHES/New_LUAD/tiles-10x-s448/feats-RETCCL-s224/pt_files
+path_coordx5: /work/u6658716/TCGA-LUAD/CLAM/PATCHES/New_LUAD/tiles-10x-s448/patches
 path_label: ./data_split/tcga_luad_merged/tcga_luad_merged_path_full.csv
 label_discrete: False # default setting
 bins_discrete: 4 # default setting, bins to divide survival times
@@ -25,10 +25,10 @@ cuda_id: 0 # use which gpu
 seed: 42
 
 # input dim
-dims: 512-256-256-1 # dims: input-emb-hid-output
+dims: 2048-128-128-1 # dims: input-emb-hid-output
 
 # output
-save_path: ./results-luad-hier/ple_conch_5x20x_224 # ss
+save_path: ./results-luad-hier/ple_retccl_10x40x_224 # ss
 save_prediction: True
 
 # Patch Embedding
@@ -41,7 +41,7 @@ emb_x20_ksize: 3 # won't be used when capool
 # Transformer Encoder
 tra_position_emb: True # if using patch positional embedding, default True
 tra_backbone: Transformer # Nystromformer / Transformer, default Transformer
-tra_nhead: 8
+tra_nhead: 1
 tra_num_layers: 1 # 1 / 2, default using one layer.
 tra_ksize: 3 # only used for Conv1D / Conv2D, default 3
 tra_dw_conv: False # only used for Conv1D / Conv2D, default False.
@@ -62,7 +62,7 @@ reg_l1: 0.00001
 batch_size: 1
 num_workers: 4
 epochs: 150
-bp_every_iters: 270
+bp_every_iters: 60
 monitor_metrics: ci
 es_patience: 30
 es_warmup: 0

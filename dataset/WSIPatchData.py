@@ -103,6 +103,7 @@ class WSIPatchDataset(Dataset):
         self.path_coordx5  = path_coordx5
         self.feat_format   = feat_format
         self.magnification = magnification
+        
 
         SurvLabel = SurvLabelTransformer(path_label)
         if label_discrete:
@@ -126,7 +127,7 @@ class WSIPatchDataset(Dataset):
         pid = self.pids[index]
         sids = self.pid2sids[pid]
         feats_x20, feats_x5, coors_x5 = [], [], []
-
+        
         for sid in sids:
             fpath_px20 = osp.join(self.path_patchx20, sid + '.' + self.feat_format)
             fpath_px5  = osp.join(self.path_patchx5,  sid + '.' + self.feat_format)
