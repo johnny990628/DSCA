@@ -5,9 +5,11 @@ import numpy as np
 from torch.optim import lr_scheduler
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
-from torch.nn import DataParallel
+from utils.parallel import DataParallelModel, DataParallelCriterion
+from torch.nn.parallel.scatter_gather import scatter
 
-from .HierNet import WSIGenericNet, WSIHierNet, WSIGenericCAPNet, CLAM_Survival
+
+from .HierNet import WSIGenericNet, WSIHierNet, WSIGenericCAPNet, CLAM_Survival, MCAT_Surv
 from .model_utils import init_weights
 from utils import *
 from loss import create_survloss, loss_reg_l1
@@ -15,6 +17,7 @@ from optim import create_optimizer
 from dataset import prepare_dataset
 from eval import evaluator
 from loss.loss_interface import NLLLoss
+import deepspeed
 
 
 class MyHandler(object):
@@ -74,14 +77,11 @@ class MyHandler(object):
             )
         elif cfg['task'] == 'clam':
             self.model = CLAM_Survival(dims=dims)
+        elif cfg['task'] == 'mcat':
+            self.model = MCAT_Surv(dims=dims, cell_in_dim=int(cfg['cell_in_dim']))
         else:
             raise ValueError(f"Expected HierSurv/GenericSurv, but got {cfg['task']}")
-        if torch.cuda.device_count()>1:
-            device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-            self.model = DataParallel(self.model.to(device))
-            print(f"Enable DataParallel Multi GPUs mode")
-        else:
-            self.model = self.model.cuda()
+       
         print_network(self.model)
         self.model_pe = cfg['tra_position_emb']
         print("[model] Transformer Position Embedding: {}".format('Yes' if self.model_pe else 'No'))
@@ -92,7 +92,35 @@ class MyHandler(object):
         cfg_optimizer = SimpleNamespace(opt=cfg['opt'], weight_decay=cfg['weight_decay'], lr=cfg['lr'], 
             opt_eps=cfg['opt_eps'], opt_betas=cfg['opt_betas'], momentum=cfg['opt_momentum'])
         self.optimizer = create_optimizer(cfg_optimizer, self.model)
-        
+
+        self.model = self.model.cuda()
+
+        # # Load DeepSpeed config
+        # self.ds_config = {
+        #     "train_micro_batch_size_per_gpu": 1,
+        #     "gradient_accumulation_steps": 1,
+        #     "optimizer": {
+        #         "type": "Adam",
+        #         "params": {
+        #             "lr": cfg['lr'],
+        #             "weight_decay": cfg['weight_decay']
+        #         }
+        #     },
+        #     "zero_optimization": {
+        #         "stage": 3,  # Typically 1, 2, or 3
+        #         "offload_optimizer": {"device": "cpu", "pin_memory": True},
+        #         "offload_param": {"device": "cpu", "pin_memory": True}
+        #     }
+        # }
+           
+
+        # # Initialize DeepSpeed
+        # self.model, _, _, _ = deepspeed.initialize(
+        #     model=self.model,
+        #     model_parameters=self.model.parameters(),
+        #     config=self.ds_config
+        # )
+       
         # 1. Early stopping: patience = 30
         # 2. LR scheduler: lr * 0.5 if val_loss is not decreased in 10 epochs.
         if cfg['es_patience'] is not None:
@@ -184,6 +212,7 @@ class MyHandler(object):
             last_epoch = epoch
 
             train_cltor, batch_avg_loss = self._train_each_epoch(train_loader)
+            # train_cltor, batch_avg_loss = self._train_deepspeed_epoch(train_loader)
             self.writer.add_scalar('loss/train_batch_avg_loss', batch_avg_loss, epoch+1)
             
             if measure:
@@ -233,11 +262,12 @@ class MyHandler(object):
 
         for fx, fx5, cx5, y in train_loader:
             i_batch += 1
-            # 1. forward propagation
+
             fx = fx.cuda()
             fx5 = fx5.cuda()
             cx5 = cx5.cuda() if self.model_pe else None
             y = y.cuda()
+            
             if self.cfg['task'] == 'HierSurv':
                 y_hat = self.model(fx, fx5, cx5)
             elif self.cfg['task'] == 'GenericCAPSurv':
@@ -246,10 +276,12 @@ class MyHandler(object):
                 y_hat = self.model(fx, cx5)
             elif self.cfg['task'] == 'clam':
                 y_hat = self.model(fx)
-            # PLE: y_hat.shape = (B, 1),    y.shape = (B, 1)
-            # MLE: y_hat.shape = (B, BINS), y.shape = (B, 2)
+            elif self.cfg['task'] == 'mcat':
+                y_hat = self.model(fx,fx5)
+
             collector = collect_tensor(collector, y.detach().cpu(), y_hat.detach().cpu())
             bp_collector = collect_tensor(bp_collector, y, y_hat)
+
 
             if bp_collector['y'].size(0) % bp_every_iters == 0 or bp_collector['y'].size(0)==len(train_loader):
                 # 2. backward propagation
@@ -262,7 +294,7 @@ class MyHandler(object):
                 self.optimizer.zero_grad()
                 # 2.2 calculate loss
                 loss = self.loss(bp_collector['y'], bp_collector['y_hat'])
-                loss += self.loss_l1(self.model.parameters())
+                # loss += self.loss_l1(self.model.parameters())
                 all_loss.append(loss.item())
                 print("[training epoch] training batch {}, loss: {:.6f}".format(i_batch, loss.item()))
 
@@ -274,6 +306,43 @@ class MyHandler(object):
                 bp_collector = {'y': None, 'y_hat': None}
 
         return collector, sum(all_loss)/len(all_loss)
+
+    def _train_deepspeed_epoch(self, train_loader):
+        collector = {'y': None, 'y_hat': None}
+        all_loss = []
+
+        self.model.train()
+        for i_batch, (fx, fx5, cx5, y) in enumerate(train_loader):
+            fx = fx.cuda()
+            fx5 = fx5.cuda()
+            cx5 = cx5.cuda() if self.model_pe else None
+            y = y.cuda()
+            
+            if self.cfg['task'] == 'HierSurv':
+                y_hat = self.model(fx, fx5, cx5)
+            elif self.cfg['task'] == 'GenericCAPSurv':
+                y_hat = self.model(fx, fx5, cx5)
+            elif self.cfg['task'] == 'GenericSurv':
+                y_hat = self.model(fx, cx5)
+            elif self.cfg['task'] == 'clam':
+                y_hat = self.model(fx)
+            elif self.cfg['task'] == 'mcat':
+                y_hat = self.model(fx,fx5)
+
+            # Collect predictions
+            collector = collect_tensor(collector, y.detach().cpu(), y_hat.detach().cpu())
+
+            if (i_batch + 1) % self.cfg['bp_every_iters'] == 0 or i_batch == len(train_loader) - 1:
+                loss = self.loss(collector['y'], collector['y_hat'])
+                loss /= self.cfg['bp_every_iters']  # 平均化梯度
+                self.model.backward(loss)
+                self.model.step()
+                all_loss.append(loss.item())
+
+                # 清空 collector
+                collector = {'y': None, 'y_hat': None}
+
+        return sum(all_loss) / len(all_loss)
 
     @staticmethod
     def test_model(model, loader, task, checkpoint=None, model_pe=False):
@@ -287,7 +356,7 @@ class MyHandler(object):
                 x1 = x1.cuda()
                 x2 = x2.cuda()
                 c = c.cuda() if model_pe else None
-                y  = y.cuda()
+                y = y.cuda()
                 if task == 'HierSurv':
                     y_hat = model(x1, x2, c)
                 elif task == 'GenericCAPSurv':
@@ -296,5 +365,7 @@ class MyHandler(object):
                     y_hat = model(x1, c)
                 elif task == 'clam':
                     y_hat = model(x1)
+                elif task == 'mcat':
+                    y_hat = model(x1, x2)
                 res = collect_tensor(res, y.detach().cpu(), y_hat.detach().cpu())
         return res

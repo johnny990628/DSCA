@@ -142,7 +142,7 @@ class WSIPatchDataset(Dataset):
         feats_x20 = torch.cat(feats_x20, dim=0).to(torch.float)
         feats_x5  = torch.cat(feats_x5,  dim=0).to(torch.float)
         coors_x5  = torch.cat(coors_x5,  dim=0).to(torch.int32)
-        assert coors_x5.shape[0] == feats_x5.shape[0]
+        # assert coors_x5.shape[0] == feats_x5.shape[0]
         # assert feats_x20.shape[0] == 16 * feats_x5.shape[0]
 
         y = torch.Tensor(self.pid2label[pid]).to(torch.float)

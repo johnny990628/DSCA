@@ -11,9 +11,19 @@ from collections import defaultdict, OrderedDict
 
 from model import MyHandler
 from utils import print_config
+import os
+import torch
+import torch.distributed as dist
 
 
-def main(config):
+def main(config, local_rank):
+
+    # Initialize distributed environment if needed
+    if "WORLD_SIZE" in os.environ and int(os.environ["WORLD_SIZE"]) > 1:
+        dist.init_process_group(backend="nccl", init_method="env://")
+        torch.cuda.set_device(local_rank)
+        print(f"[INFO] Distributed training initialized. Local rank: {local_rank}")
+
     model = MyHandler(config)
     metrics = model.exec()
     print('[INFO] Metrics:', metrics)
@@ -45,6 +55,7 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', '-f', required=True, type=str, help='path to the config file')
     parser.add_argument('--multi_run', action='store_true', help='flag: multi run')
+    parser.add_argument('--local_rank', type=int, default=0, help='Local rank for distributed training')  # Add local_rank
     args = vars(parser.parse_args())
     return args
 
@@ -97,8 +108,10 @@ if __name__ == '__main__':
     cfg = get_args()
     config = get_config(cfg['config'])
     print_config(config)
+
+    local_rank = cfg.get('local_rank', 0)
     if cfg['multi_run']:
         multi_run_main(config)
     else:
-        main(config)
+        main(config, local_rank)
 
