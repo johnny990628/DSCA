@@ -16,17 +16,30 @@ import torch
 import torch.distributed as dist
 
 
-def main(config, local_rank):
+def main(rank, world_size, config):
 
-    # Initialize distributed environment if needed
-    if "WORLD_SIZE" in os.environ and int(os.environ["WORLD_SIZE"]) > 1:
-        dist.init_process_group(backend="nccl", init_method="env://")
-        torch.cuda.set_device(local_rank)
-        print(f"[INFO] Distributed training initialized. Local rank: {local_rank}")
+    """ 初始化分布式環境並啟動訓練 """
+    if world_size > 1:
+        os.environ["MASTER_ADDR"] = "127.0.0.1"  # ✅ 確保主機地址一致
+        os.environ["MASTER_PORT"] = "29500"  # ✅ 確保端口號一致
 
-    model = MyHandler(config)
+        dist.init_process_group(
+            backend="gloo",  # ✅ 使用 NCCL 進行 GPU 分布式訓練
+            rank=rank,
+            world_size=world_size
+        )
+        torch.cuda.set_device(rank)
+        print(f"[INFO] DDP 初始化成功，Rank: {rank}/{world_size}")
+
+    model = MyHandler(config, rank, world_size)  # ✅ 傳入 rank 和 world_size
     metrics = model.exec()
-    print('[INFO] Metrics:', metrics)
+
+    if rank == 0:  # 只有主 GPU 負責輸出
+        print('[INFO] Metrics:', metrics)
+
+    if world_size > 1:
+        dist.barrier()  # 確保所有 GPU 都同步結束
+        dist.destroy_process_group()
 
 def multi_run_main(config):
     hyperparams = []
@@ -109,9 +122,15 @@ if __name__ == '__main__':
     config = get_config(cfg['config'])
     print_config(config)
 
-    local_rank = cfg.get('local_rank', 0)
-    if cfg['multi_run']:
-        multi_run_main(config)
+    world_size = torch.cuda.device_count()  # 🔥 獲取 GPU 數量
+    print(f"[INFO] World size: {world_size}")
+
+    if world_size > 1:
+        torch.multiprocessing.spawn(main, args=(world_size, config), nprocs=world_size, join=True)
     else:
-        main(config, local_rank)
+        main(0, 1, config)  # 如果只有 1 張 GPU，則不使用 DDP
+    # if cfg['multi_run']:
+    #     multi_run_main(config)
+    # else:
+    #     main(config, local_rank)
 

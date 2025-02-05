@@ -42,6 +42,7 @@ class SurvLabelTransformer(object):
         self.pat_data.loc[:, column_label] = label
         
         return self.pat_data
+    
 
     def to_discrete(self, bins=4, column_label_t='y_t', column_label_c='y_c'):
         """

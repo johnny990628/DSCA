@@ -1,4 +1,5 @@
 import os.path as osp
+import os
 from types import SimpleNamespace
 import torch
 import numpy as np
@@ -7,6 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 from utils.parallel import DataParallelModel, DataParallelCriterion
 from torch.nn.parallel.scatter_gather import scatter
+from .conch import create_model_from_pretrained
 
 
 from .HierNet import WSIGenericNet, WSIHierNet, WSIGenericCAPNet, CLAM_Survival, MCAT_Surv
@@ -17,14 +19,168 @@ from optim import create_optimizer
 from dataset import prepare_dataset
 from eval import evaluator
 from loss.loss_interface import NLLLoss
-import deepspeed
 
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+import openslide
+from datasets.dataset_h5 import Whole_Slide_Bag_FP
+
+
+class SurvLabelTransformer(object):
+    """
+    SurvLabelTransformer: create label of survival data for model training.
+    """
+    def __init__(self, path_label, column_t='t', column_e='e', verbose=True):
+        super(SurvLabelTransformer, self).__init__()
+        self.path_label = path_label
+        self.column_t = column_t
+        self.column_e = column_e
+        self.column_label = None
+        self.full_data = pd.read_csv(path_label, dtype={'patient_id': str, 'pathology_id': str})
+        
+        self.pat_data = self.to_patient_data(self.full_data, at_column='patient_id')
+        self.min_t = self.pat_data[column_t].min()
+        self.max_t = self.pat_data[column_t].max()
+        if verbose:
+            print('[surv label] at patient level')
+            print('\tmin/avg/median/max time = {}/{:.2f}/{}/{}'.format(self.min_t, 
+                self.pat_data[column_t].mean(), self.pat_data[column_t].median(), self.max_t))
+            print('\tratio of event = {}'.format(self.pat_data[column_e].sum() / len(self.pat_data)))
+
+    def to_patient_data(self, df, at_column='patient_id'):
+        df_gps = df.groupby('patient_id').groups
+        df_idx = [i[0] for i in df_gps.values()]
+        return df.loc[df_idx, :]
+
+    def to_continuous(self, column_label='y'):
+        print('[surv label] to continuous')
+        self.column_label = [column_label]
+
+        label = []
+        for i in self.pat_data.index:
+            if self.pat_data.loc[i, self.column_e] == 0:
+                label.append(-1 * self.pat_data.loc[i, self.column_t])
+            else:
+                label.append(self.pat_data.loc[i, self.column_t])
+        self.pat_data.loc[:, column_label] = label
+        
+        return self.pat_data
+
+    def to_discrete(self, bins=4, column_label_t='y_t', column_label_c='y_c'):
+        """
+        based on the quartiles of survival time values (in months) of uncensored patients.
+        see Chen et al. Multimodal Co-Attention Transformer for Survival Prediction in Gigapixel Whole Slide Images
+        """
+        print('[surv label] to discrete, bins = {}'.format(bins))
+        self.column_label = [column_label_t, column_label_c]
+
+        # c = 1 -> censored/no event, c = 0 -> uncensored/event
+        self.pat_data.loc[:, column_label_c] = 1 - self.pat_data.loc[:, self.column_e]
+
+        # discrete time labels
+        df_events = self.pat_data[self.pat_data[self.column_e] == 1]
+        _, qbins = pd.qcut(df_events[self.column_t], q=bins, retbins=True, labels=False)
+        qbins[0] = self.min_t - 1e-5
+        qbins[-1] = self.max_t + 1e-5
+
+        discrete_labels, qbins = pd.cut(self.pat_data[self.column_t], bins=qbins, retbins=True, labels=False, right=False, include_lowest=True)
+        self.pat_data.loc[:, column_label_t] = discrete_labels.values.astype(int)
+
+        return self.pat_data
+
+    def collect_slide_info(self, pids, column_label=None):
+        if column_label is None:
+            column_label = self.column_label
+
+        sel_pids, pid2sids, pid2label = list(), dict(), dict()
+        for pid in pids:
+            sel_idxs = self.full_data[self.full_data['patient_id'] == pid].index
+            if len(sel_idxs) > 0:
+                sel_pids.append(pid)
+                pid2sids[pid] = list(self.full_data.loc[sel_idxs, 'pathology_id'])
+                
+                pat_idx = self.pat_data[self.pat_data['patient_id'] == pid].index[0]
+                pid2label[pid] = list(self.pat_data.loc[pat_idx, column_label])
+
+            else:
+                print('[warning] patient {} not found!'.format(pid))
+
+        return sel_pids, pid2sids, pid2label
+
+# 定義WSI數據集
+class WSIDataset(torch.utils.data.Dataset):
+    def __init__(self, csv_path, h5_dir, slide_dir, slide_ext='.svs', custom_transforms=None, pids=None):
+        self.csv_path = csv_path
+        self.h5_dir = h5_dir
+        self.slide_dir = slide_dir
+        self.slide_ext = slide_ext
+        self.custom_transforms = custom_transforms
+        
+        if isinstance(csv_path, str):
+            self.full_data = pd.read_csv(csv_path, dtype={'patient_id': str, 'pathology_id': str})
+        elif isinstance(csv_path, pd.DataFrame):
+            self.full_data = csv_path.copy()
+        else:
+            raise ValueError("csv_input 必須為 CSV 檔案路徑或是 pandas DataFrame")
+            
+        # 收集全部病理切片的信息
+        if pids is not None:
+            self.full_data = self.full_data[self.full_data["patient_id"].isin(pids)]
+        
+        self.slide_data = self.load_slide_data()
+
+    def load_slide_data(self):
+        """Load slide data and survival information from CSV using SurvLabelTransformer"""
+        # 初始化 SurvLabelTransformer
+        surv_label = SurvLabelTransformer(self.csv_path, verbose=True)
+        
+        # 轉換為連續的生存標籤
+        patient_data = surv_label.to_continuous(column_label='y')
+        
+        # 準備返回的數據
+        slide_data = []
+        for _, row in self.full_data.iterrows():
+            pathology_id = row['pathology_id']
+            patient_id = row['patient_id']
+            
+            # 獲取對應病人的標籤
+            pat_idx = patient_data[patient_data['patient_id'] == patient_id].index[0]
+            label = patient_data.loc[pat_idx, 'y']
+            
+            slide_data.append((pathology_id, label))
+            
+        print(f"Loaded {len(slide_data)} slides with survival data")
+        return slide_data
+
+    def __len__(self):
+        return len(self.slide_data)
+
+    def __getitem__(self, idx):
+        slide_id, label = self.slide_data[idx]
+        h5_path = os.path.join(self.h5_dir, 'patches', f"{slide_id}.h5")
+        slide_path = os.path.join(self.slide_dir, f"{slide_id}{self.slide_ext}")
+        
+        # 使用Whole_Slide_Bag_FP加載WSI
+        wsi = openslide.open_slide(slide_path)
+        wsi_dataset = Whole_Slide_Bag_FP(file_path=h5_path, wsi=wsi, custom_transforms=self.custom_transforms)
+
+        # 確保數據格式正確
+        if len(wsi_dataset) > 0:
+            first_item = wsi_dataset[0]
+            if not isinstance(first_item[0], torch.Tensor):
+                raise ValueError(f"Expected torch.Tensor, got {type(first_item[0])}")
+            print("Sample tensor shape:", first_item[0].shape)
+    
+        
+        return wsi_dataset, torch.tensor(label, dtype=torch.float32)
 
 class MyHandler(object):
     """Deep Risk Predition Model Handler.
     Handler the model train/val/test for: HierSurv
     """
-    def __init__(self, cfg):
+    def __init__(self, cfg, rank, world_size):
         # set up for seed and device
         torch.cuda.set_device(cfg['cuda_id'])
         seed_everything(cfg['seed'])
@@ -78,7 +234,26 @@ class MyHandler(object):
         elif cfg['task'] == 'clam':
             self.model = CLAM_Survival(dims=dims)
         elif cfg['task'] == 'mcat':
-            self.model = MCAT_Surv(dims=dims, cell_in_dim=int(cfg['cell_in_dim']))
+            self.model = MCAT_Surv(dims=dims, cell_in_dim=int(cfg['cell_in_dim']), top_k=int(cfg['top_k']))
+        elif cfg['task'] == 'fine_tuning_clam':
+            self.device = torch.device(f"cuda:{rank}")
+            self.rank = rank
+            self.world_size = world_size
+             # ✅ 加載 Foundation Model
+            self.feature_extractor, self.preprocess = create_model_from_pretrained(
+                "conch_ViT-B-16", 
+                checkpoint_path=cfg["ckpt_path"],
+                force_image_size=cfg["target_patch_size"]
+            )
+            
+            self.feature_extractor.to(self.device)
+            self.feature_extractor = torch.nn.parallel.DistributedDataParallel(self.feature_extractor, device_ids=[rank], output_device=rank, find_unused_parameters=True)
+            print(f"Load Foundation Model Successfully!")
+            # ✅ 加載 Survival Model 並使用 DDP
+            self.model = CLAM_Survival(dims=dims).to(self.device)
+            self.load_checkpoint(self.best_ckpt_path)  # 載入最好的 survival model
+            self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
+            print(f"Load Survival Model Successfully!")
         else:
             raise ValueError(f"Expected HierSurv/GenericSurv, but got {cfg['task']}")
        
@@ -93,33 +268,7 @@ class MyHandler(object):
             opt_eps=cfg['opt_eps'], opt_betas=cfg['opt_betas'], momentum=cfg['opt_momentum'])
         self.optimizer = create_optimizer(cfg_optimizer, self.model)
 
-        self.model = self.model.cuda()
-
-        # # Load DeepSpeed config
-        # self.ds_config = {
-        #     "train_micro_batch_size_per_gpu": 1,
-        #     "gradient_accumulation_steps": 1,
-        #     "optimizer": {
-        #         "type": "Adam",
-        #         "params": {
-        #             "lr": cfg['lr'],
-        #             "weight_decay": cfg['weight_decay']
-        #         }
-        #     },
-        #     "zero_optimization": {
-        #         "stage": 3,  # Typically 1, 2, or 3
-        #         "offload_optimizer": {"device": "cpu", "pin_memory": True},
-        #         "offload_param": {"device": "cpu", "pin_memory": True}
-        #     }
-        # }
-           
-
-        # # Initialize DeepSpeed
-        # self.model, _, _, _ = deepspeed.initialize(
-        #     model=self.model,
-        #     model_parameters=self.model.parameters(),
-        #     config=self.ds_config
-        # )
+        # self.model = self.model.cuda()
        
         # 1. Early stopping: patience = 30
         # 2. LR scheduler: lr * 0.5 if val_loss is not decreased in 10 epochs.
@@ -132,6 +281,43 @@ class MyHandler(object):
         self.steplr = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10, verbose=True)
         self.cfg = cfg
         print_config(cfg, print_to_path=self.config_path)
+
+    def load_checkpoint(self, checkpoint_path):
+        if osp.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location="cuda")
+            self.model.load_state_dict(checkpoint)
+            print(f"[Checkpoint] Loaded from {checkpoint_path}")
+        else:
+            print(f"[Checkpoint] No checkpoint found at {checkpoint_path}, starting from scratch.")
+
+    def extract_features(self, wsi_dataset):
+        """
+        ✅ 即時從 WSI 中提取 Patch-Level 特徵
+        Args:
+            wsi_dataset: 單個 WSI 數據集
+        Returns:
+            提取的特徵張量
+        """
+        loader = DataLoader(
+            wsi_dataset, batch_size=32, shuffle=False, num_workers=8, pin_memory=True
+        )
+        
+        features = []
+        self.feature_extractor.eval()
+        with torch.no_grad():
+            for imgs in loader:
+                imgs = imgs.to(self.device)
+
+                # ✅ 提取特徵
+                output = self.feature_extractor(imgs)
+                if isinstance(output, tuple):
+                    vis_features = output[0]
+                else:
+                    vis_features = output
+                
+                features.append(vis_features.cpu())
+
+        return torch.cat(features, dim=0)
 
     def exec(self):
         task = self.cfg['task']
@@ -149,20 +335,54 @@ class MyHandler(object):
             train_pids = train_set.pids
             val_set    = prepare_dataset(pids_val, self.cfg, self.cfg['magnification'])
             val_pids   = val_set.pids
-            train_loader = DataLoader(train_set, batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
-                num_workers=self.cfg['num_workers'], shuffle=True,  worker_init_fn=seed_worker)
-            val_loader   = DataLoader(val_set,   batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
-                num_workers=self.cfg['num_workers'], shuffle=False, worker_init_fn=seed_worker)
-            if pids_test is not None:
+
+            if task == 'fine_tuning_clam':
                 test_set    = prepare_dataset(pids_test, self.cfg, self.cfg['magnification'])
                 test_pids   = test_set.pids
-                test_loader = DataLoader(test_set,  batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
-                    num_workers=self.cfg['num_workers'], shuffle=False, worker_init_fn=seed_worker)
-            else:
-                test_set = None 
-                test_pids = None
-                test_loader = None
+                self.surv_label = SurvLabelTransformer(self.cfg["csv_path"])
+                self.full_data = self.surv_label.full_data
 
+                train_df = self.full_data[self.full_data["patient_id"].isin(pids_train)]
+                val_df = self.full_data[self.full_data["patient_id"].isin(pids_val)]
+                test_df = self.full_data[self.full_data["patient_id"].isin(pids_test)]
+
+                print(f"[exec] train_df size: {len(train_df)}, val_df size: {len(val_df)}, test_df size: {len(test_df)}")
+
+                # ✅ 創建 WSIDataset
+                train_set = WSIDataset(self.cfg["csv_path"], self.cfg["h5_dir"], self.cfg["slide_dir"], custom_transforms=self.preprocess, pids=train_pids)
+                val_set = WSIDataset(self.cfg["csv_path"], self.cfg["h5_dir"], self.cfg["slide_dir"], custom_transforms=self.preprocess, pids=val_pids)
+                test_set = WSIDataset(self.cfg["csv_path"], self.cfg["h5_dir"], self.cfg["slide_dir"], custom_transforms=self.preprocess, pids=test_pids)
+
+                train_sampler = DistributedSampler(train_set, num_replicas=self.world_size, rank=self.rank, shuffle=True)
+                val_sampler = DistributedSampler(val_set, num_replicas=self.world_size, rank=self.rank, shuffle=False)
+                test_sampler = DistributedSampler(test_set, num_replicas=self.world_size, rank=self.rank, shuffle=False)
+
+                train_loader = DataLoader(
+                    train_set, batch_size=self.cfg['batch_size'], sampler=train_sampler,
+                    num_workers=self.cfg['num_workers'], pin_memory=True, worker_init_fn=seed_worker
+                )
+                val_loader = DataLoader(
+                    val_set, batch_size=self.cfg['batch_size'], sampler=val_sampler,
+                    num_workers=self.cfg['num_workers'], pin_memory=True, worker_init_fn=seed_worker
+                )
+                test_loader = DataLoader(
+                    test_set, batch_size=self.cfg['batch_size'], sampler=test_sampler,
+                    num_workers=self.cfg['num_workers'], pin_memory=True, worker_init_fn=seed_worker
+                )
+            else:
+                train_loader = DataLoader(train_set, batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
+                    num_workers=self.cfg['num_workers'], shuffle=True,  worker_init_fn=seed_worker)
+                val_loader   = DataLoader(val_set,   batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
+                    num_workers=self.cfg['num_workers'], shuffle=False, worker_init_fn=seed_worker)
+                if pids_test is not None:
+                    test_set    = prepare_dataset(pids_test, self.cfg, self.cfg['magnification'])
+                    test_pids   = test_set.pids
+                    test_loader = DataLoader(test_set,  batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
+                        num_workers=self.cfg['num_workers'], shuffle=False, worker_init_fn=seed_worker)
+                else:
+                    test_set = None 
+                    test_pids = None
+                    test_loader = None
             
             # Train
             val_name = 'validation'
@@ -210,9 +430,12 @@ class MyHandler(object):
         last_epoch = -1
         for epoch in range(epochs):
             last_epoch = epoch
-
-            train_cltor, batch_avg_loss = self._train_each_epoch(train_loader)
-            # train_cltor, batch_avg_loss = self._train_deepspeed_epoch(train_loader)
+            if self.cfg['task'] == 'fine_tuning_clam':
+                train_loader.sampler.set_epoch(epoch)
+                train_cltor, batch_avg_loss = self._train_finetune_epoch(train_loader)
+            else:
+                train_cltor, batch_avg_loss = self._train_each_epoch(train_loader)
+            
             self.writer.add_scalar('loss/train_batch_avg_loss', batch_avg_loss, epoch+1)
             
             if measure:
@@ -227,7 +450,11 @@ class MyHandler(object):
                 for k in val_loaders.keys():
                     if val_loaders[k] is None:
                         continue
-                    val_cltor = self.test_model(self.model, val_loaders[k], self.cfg['task'], model_pe=self.model_pe)
+                    if self.cfg['task'] == 'fine_tuning_clam':
+                        val_cltor = self.test_fine_tune_model(self.model, val_loaders[k], self.cfg['task'], model_pe=self.model_pe)
+                    else:
+                        val_cltor = self.test_model(self.model, val_loaders[k], self.cfg['task'], model_pe=self.model_pe)
+                    
                     # If it is at eval mode, then set alpha in SurvMLE to 0
                     met_ci, met_loss = evaluator(val_cltor['y'], val_cltor['y_hat'], metrics='cindex'), self.loss(val_cltor['y'], val_cltor['y_hat'])
                     self.writer.add_scalar('loss/%s_overall_loss'%k, met_loss, epoch+1)
@@ -249,6 +476,7 @@ class MyHandler(object):
 
         if save:
             torch.save(self.model.state_dict(), self.last_ckpt_path)
+            self._save_checkpoint(epoch, val_metrics)
             print("[training] last model saved at epoch {}".format(last_epoch))
 
     def _train_each_epoch(self, train_loader):
@@ -282,7 +510,7 @@ class MyHandler(object):
             collector = collect_tensor(collector, y.detach().cpu(), y_hat.detach().cpu())
             bp_collector = collect_tensor(bp_collector, y, y_hat)
 
-
+            torch.cuda.empty_cache()
             if bp_collector['y'].size(0) % bp_every_iters == 0 or bp_collector['y'].size(0)==len(train_loader):
                 # 2. backward propagation
                 if self.cfg['loss'] == 'survple' and torch.sum(bp_collector['y'] > 0).item() <= 0:
@@ -301,48 +529,57 @@ class MyHandler(object):
                 # 2.3 backwards gradients and update networks
                 loss.backward()
                 self.optimizer.step()
-                torch.cuda.empty_cache()
                 
                 bp_collector = {'y': None, 'y_hat': None}
 
         return collector, sum(all_loss)/len(all_loss)
 
-    def _train_deepspeed_epoch(self, train_loader):
+    def _train_finetune_epoch(self, train_loader):
+        bp_every_iters = self.cfg['bp_every_iters']
         collector = {'y': None, 'y_hat': None}
-        all_loss = []
+        bp_collector = {'y': None, 'y_hat': None}
+        all_loss  = []
 
         self.model.train()
-        for i_batch, (fx, fx5, cx5, y) in enumerate(train_loader):
-            fx = fx.cuda()
-            fx5 = fx5.cuda()
-            cx5 = cx5.cuda() if self.model_pe else None
-            y = y.cuda()
+        i_batch = 0
+
+        for i, (wsi_dataset, label) in enumerate(train_loader):
+            i_batch += 1
             
-            if self.cfg['task'] == 'HierSurv':
-                y_hat = self.model(fx, fx5, cx5)
-            elif self.cfg['task'] == 'GenericCAPSurv':
-                y_hat = self.model(fx, fx5, cx5)
-            elif self.cfg['task'] == 'GenericSurv':
-                y_hat = self.model(fx, cx5)
-            elif self.cfg['task'] == 'clam':
-                y_hat = self.model(fx)
-            elif self.cfg['task'] == 'mcat':
-                y_hat = self.model(fx,fx5)
+            features = self.extract_features(wsi_dataset)
+            features = features.to(self.device)
+            label = label.to(self.device)
+            
+            y_hat = self.model(features)
 
-            # Collect predictions
             collector = collect_tensor(collector, y.detach().cpu(), y_hat.detach().cpu())
+            bp_collector = collect_tensor(bp_collector, y, y_hat)
 
-            if (i_batch + 1) % self.cfg['bp_every_iters'] == 0 or i_batch == len(train_loader) - 1:
-                loss = self.loss(collector['y'], collector['y_hat'])
-                loss /= self.cfg['bp_every_iters']  # 平均化梯度
-                self.model.backward(loss)
-                self.model.step()
+            torch.cuda.empty_cache()
+            if bp_collector['y'].size(0) % bp_every_iters == 0 or bp_collector['y'].size(0)==len(train_loader):
+                # 2. backward propagation
+                if self.cfg['loss'] == 'survple' and torch.sum(bp_collector['y'] > 0).item() <= 0:
+                    print("[warning] batch {}, event count <= 0, skipped.".format(i_batch))
+                    bp_collector = {'y': None, 'y_hat': None}
+                    continue
+                
+                # 2.1 zero gradients buffer
+                self.optimizer.zero_grad()
+                # 2.2 calculate loss
+                loss = self.loss(bp_collector['y'], bp_collector['y_hat'])
+                # loss += self.loss_l1(self.model.parameters())
                 all_loss.append(loss.item())
+                if self.rank == 0:
+                    print("[training epoch] training batch {}, loss: {:.6f}".format(i_batch, loss.item()))
 
-                # 清空 collector
-                collector = {'y': None, 'y_hat': None}
+                # 2.3 backwards gradients and update networks
+                loss.backward()
+                self.optimizer.step()
+                
+                bp_collector = {'y': None, 'y_hat': None}
 
-        return sum(all_loss) / len(all_loss)
+        return collector, sum(all_loss)/len(all_loss)
+
 
     @staticmethod
     def test_model(model, loader, task, checkpoint=None, model_pe=False):
@@ -363,9 +600,35 @@ class MyHandler(object):
                     y_hat = model(x1, x2, c)
                 elif task == 'GenericSurv':
                     y_hat = model(x1, c)
-                elif task == 'clam':
+                elif task == 'clam' or task == 'fine_tuning_clam':
                     y_hat = model(x1)
                 elif task == 'mcat':
                     y_hat = model(x1, x2)
                 res = collect_tensor(res, y.detach().cpu(), y_hat.detach().cpu())
         return res
+    
+
+    def test_fine_tune_model(self, model, loader, task, checkpoint=None, model_pe=False):
+        if checkpoint is not None:
+            model.load_state_dict(torch.load(checkpoint))
+
+        model.eval()
+        res = {'y': None, 'y_hat': None}
+        with torch.no_grad():
+            for i, (wsi_dataset, label) in enumerate(loader):
+                features = self.extract_features(wsi_dataset)
+                features = features.to(self.device)
+                y = label.to(self.device)
+                y_hat = model(features)
+                res = collect_tensor(res, y.detach().cpu(), y_hat.detach().cpu())
+        return res
+    
+    def _save_checkpoint(self, epoch, best_val_loss):
+        checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": self.model.module.state_dict(),  # DDP 需要用 `module`
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "best_val_loss": best_val_loss,
+        }
+        torch.save(checkpoint, self.cfg['save_path'] + f"/fine_tuned_checkpoint.pth")
+        print(f"[Checkpoint] Best model saved at epoch {epoch + 1} with loss {best_val_loss:.4f}")

@@ -374,7 +374,7 @@ class CLAM_Survival(nn.Module):
                     nn.Linear(dims[1], dims[2]),
                     nn.ReLU(inplace=True),
                     nn.Dropout(0.25),
-                    nn.Linear(dims[2], dims[3])
+                    nn.Linear(dims[2], 1)
         )
 
     @staticmethod
@@ -576,10 +576,10 @@ class BilinearFusion(nn.Module):
 #         return risk_score
 
 class MCAT_Surv(nn.Module):
-    def __init__(self, dims, cell_in_dim, fusion='concat', dropout=0.25):
+    def __init__(self, dims, cell_in_dim, top_k=100, fusion='concat', dropout=0.25):
         super(MCAT_Surv, self).__init__()
         self.fusion = fusion
-        
+        self.top_k = top_k
         ### FC Layer over WSI bag
         wsi_fc = [
             nn.Linear(dims[0], dims[1]), 
@@ -629,17 +629,26 @@ class MCAT_Surv(nn.Module):
         x_path = x_path.squeeze(0)
         x_cell = x_cell.squeeze(0)
 
-        ### Bag-Level Representation
-        h_path_bag = self.wsi_net(x_path).unsqueeze(1) ### path embeddings are fed through a FC layer
-        h_cell_bag = self.cell_net(x_cell).unsqueeze(1) ### each cell signature goes through it's own FC layer
+        # Bag-Level Representation
+        h_path_bag = self.wsi_net(x_path).unsqueeze(1) # path embeddings are fed through a FC layer
+        h_cell_bag = self.cell_net(x_cell).unsqueeze(1) # each cell signature goes through it's own FC layer
         
-        ### Cellular-Guided Co-Attention
-        h_path_bag = h_path_bag
-        h_cell_bag = h_cell_bag
-        h_path_coattn, A_coattn = self.coattn(h_cell_bag, h_path_bag, h_path_bag) # Q, K, V
+        # Apply Gated Attention to cellular features
+        A_cell, h_cell = self.gated_attention(h_cell_bag)
+        A_cell = torch.transpose(A_cell, 1, 0)
+        A_cell = F.softmax(A_cell, dim=1)
+
+        # Select top-k cellular features
+        topk_indices = torch.topk(A_cell.squeeze(), self.top_k, dim=0)[1]
+        h_cell_topk = h_cell[topk_indices]
+
+        # Co-Attention (Q: cellular features, K/V: pathology features)
+        h_path_coattn, A_coattn = self.coattn(h_cell_topk, h_path_bag, h_path_bag) # Q, K, V
+        
+        # Concatenate cellular and pathology features
+        # h_path_coattn = torch.cat((h_path_bag, h_cell_bag), dim=-1)  # 在最後一個維度拼接
 
         # Gated Attention
-        h_path_coattn = h_path_coattn
         A_path, h_path = self.gated_attention(h_path_coattn.squeeze(1))
         A_path = torch.transpose(A_path, 1, 0)  # Adjust dimensions
         h_path = torch.mm(F.softmax(A_path, dim=1), h_path)  # Weighted sum
