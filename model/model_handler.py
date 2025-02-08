@@ -269,7 +269,8 @@ class MyHandler(object):
             opt_eps=cfg['opt_eps'], opt_betas=cfg['opt_betas'], momentum=cfg['opt_momentum'])
         self.optimizer = create_optimizer(cfg_optimizer, self.model)
 
-        self.model = self.model.cuda()
+        if cfg['task'] != 'fine_tuning_clam':
+            self.model = self.model.cuda()
        
         # 1. Early stopping: patience = 30
         # 2. LR scheduler: lr * 0.5 if val_loss is not decreased in 10 epochs.

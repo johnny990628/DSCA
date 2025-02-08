@@ -24,7 +24,7 @@ def main(rank, world_size, config):
         os.environ["MASTER_PORT"] = "29500"  # ✅ 確保端口號一致
 
         dist.init_process_group(
-            backend="gloo",  # ✅ 使用 NCCL 進行 GPU 分布式訓練
+            backend="nccl",  # ✅ 使用 NCCL 進行 GPU 分布式訓練
             rank=rank,
             world_size=world_size
         )

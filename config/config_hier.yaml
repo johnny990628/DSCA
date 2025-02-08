@@ -1,4 +1,4 @@
-task: mcat # use low and high resolutions (dual stream)
+task: fine_tuning_clam # use low and high resolutions (dual stream)
 experiment: sim # default sim
 
 # spliting
@@ -32,8 +32,8 @@ cuda_id: 0 # use which gpu
 seed: 42
 
 # input dim
-# dims: 512-256-256 # for clam
-dims: 512-256-128-64-32 # for fusion
+dims: 512-256-256 # for clam
+# dims: 512-256-128-64-32 # for fusion
 cell_in_dim: 1024
 top_k: 500
 
@@ -41,7 +41,7 @@ top_k: 500
 early_fusion: coattn
 
 # output
-save_path: ./results-luad-hier/ple_conch_hovernet_topk500_20x_224 # ss
+save_path: ./results-luad-hier/ple_conch_finetuning_5x_224 # ss
 save_prediction: True
 
 # Patch Embedding
@@ -75,7 +75,7 @@ reg_l1: 0.00001
 batch_size: 1
 num_workers: 4
 epochs: 150
-bp_every_iters: 80
+bp_every_iters: 10
 monitor_metrics: ci
 es_patience: 10
 es_warmup: 0
