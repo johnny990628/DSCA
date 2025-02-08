@@ -608,18 +608,18 @@ class MCAT_Surv(nn.Module):
         self.coattn = MultiheadAttention(embed_dim=dims[3], num_heads=1)
 
         self.gated_attention = Attn_Net_Gated(
-            L=dims[3],  # Hidden feature dimension
-            D=dims[3],
+            L=dims[3]*2 if fusion=='concat' else dims[3],  # Hidden feature dimension
+            D=dims[3]*2 if fusion=='concat' else dims[3],
             dropout=dropout,
             n_classes=1  # Single output: risk score
         )
         
         # Classifier
         classifier_layers = [
-            nn.Linear(dims[3], dims[4]), 
+            nn.Linear(dims[3]*2, dims[3]) if fusion=='concat' else nn.Linear(dims[3], dims[4]), 
             nn.ReLU(),
             nn.Dropout(0.25),
-            nn.Linear(dims[4], 1)
+            nn.Linear(dims[3], 1) if fusion=='concat' else nn.Linear(dims[4], 1)
         ]
         self.classifier = nn.Sequential(*classifier_layers)
     
@@ -633,20 +633,22 @@ class MCAT_Surv(nn.Module):
         h_path_bag = self.wsi_net(x_path).unsqueeze(1) # path embeddings are fed through a FC layer
         h_cell_bag = self.cell_net(x_cell).unsqueeze(1) # each cell signature goes through it's own FC layer
         
-        # Apply Gated Attention to cellular features
-        A_cell, h_cell = self.gated_attention(h_cell_bag)
-        A_cell = torch.transpose(A_cell, 1, 0)
-        A_cell = F.softmax(A_cell, dim=1)
-
-        # Select top-k cellular features
-        topk_indices = torch.topk(A_cell.squeeze(), self.top_k, dim=0)[1]
-        h_cell_topk = h_cell[topk_indices]
-
-        # Co-Attention (Q: cellular features, K/V: pathology features)
-        h_path_coattn, A_coattn = self.coattn(h_cell_topk, h_path_bag, h_path_bag) # Q, K, V
-        
         # Concatenate cellular and pathology features
-        # h_path_coattn = torch.cat((h_path_bag, h_cell_bag), dim=-1)  # 在最後一個維度拼接
+        if self.fusion=='concat':
+            h_path_coattn = torch.cat((h_path_bag, h_cell_bag), dim=-1)  # 在最後一個維度拼接
+        else:
+            # Apply Gated Attention to cellular features
+            A_cell, h_cell = self.gated_attention(h_cell_bag)
+            A_cell = torch.transpose(A_cell, 1, 0)
+            A_cell = F.softmax(A_cell, dim=1)
+
+            # Select top-k cellular features
+            topk_indices = torch.topk(A_cell.squeeze(), self.top_k, dim=0)[1]
+            h_cell_topk = h_cell[topk_indices]
+
+            # Co-Attention (Q: cellular features, K/V: pathology features)
+            h_path_coattn, A_coattn = self.coattn(h_cell_topk, h_path_bag, h_path_bag) # Q, K, V
+        
 
         # Gated Attention
         A_path, h_path = self.gated_attention(h_path_coattn.squeeze(1))

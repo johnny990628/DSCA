@@ -234,7 +234,8 @@ class MyHandler(object):
         elif cfg['task'] == 'clam':
             self.model = CLAM_Survival(dims=dims)
         elif cfg['task'] == 'mcat':
-            self.model = MCAT_Surv(dims=dims, cell_in_dim=int(cfg['cell_in_dim']), top_k=int(cfg['top_k']))
+            self.model = MCAT_Surv(dims=dims, cell_in_dim=int(cfg['cell_in_dim']), top_k=int(cfg['top_k']), fusion=str(cfg['early_fusion']))
+            print(f"[Setup] Early Fusion Approch: {str(cfg['early_fusion'])}")
         elif cfg['task'] == 'fine_tuning_clam':
             self.device = torch.device(f"cuda:{rank}")
             self.rank = rank
@@ -268,7 +269,7 @@ class MyHandler(object):
             opt_eps=cfg['opt_eps'], opt_betas=cfg['opt_betas'], momentum=cfg['opt_momentum'])
         self.optimizer = create_optimizer(cfg_optimizer, self.model)
 
-        # self.model = self.model.cuda()
+        self.model = self.model.cuda()
        
         # 1. Early stopping: patience = 30
         # 2. LR scheduler: lr * 0.5 if val_loss is not decreased in 10 epochs.
