@@ -180,8 +180,9 @@ class MyHandler(object):
     """Deep Risk Predition Model Handler.
     Handler the model train/val/test for: HierSurv
     """
-    def __init__(self, cfg, rank, world_size):
+    def __init__(self, cfg):
         # set up for seed and device
+        self.device = torch.device("cuda:0")
         torch.cuda.set_device(cfg['cuda_id'])
         seed_everything(cfg['seed'])
 
@@ -237,9 +238,6 @@ class MyHandler(object):
             self.model = MCAT_Surv(dims=dims, cell_in_dim=int(cfg['cell_in_dim']), top_k=int(cfg['top_k']), fusion=str(cfg['early_fusion']))
             print(f"[Setup] Early Fusion Approch: {str(cfg['early_fusion'])}")
         elif cfg['task'] == 'fine_tuning_clam':
-            self.device = torch.device(f"cuda:{rank}")
-            self.rank = rank
-            self.world_size = world_size
              # ✅ 加載 Foundation Model
             self.feature_extractor, self.preprocess = create_model_from_pretrained(
                 "conch_ViT-B-16", 
@@ -248,12 +246,11 @@ class MyHandler(object):
             )
             
             self.feature_extractor.to(self.device)
-            self.feature_extractor = torch.nn.parallel.DistributedDataParallel(self.feature_extractor, device_ids=[rank], output_device=rank, find_unused_parameters=True)
+            self.feature_extractor = torch.nn.DataParallel(self.feature_extractor)
             print(f"Load Foundation Model Successfully!")
             # ✅ 加載 Survival Model 並使用 DDP
             self.model = CLAM_Survival(dims=dims).to(self.device)
             self.load_checkpoint(self.best_ckpt_path)  # 載入最好的 survival model
-            self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
             print(f"Load Survival Model Successfully!")
         else:
             raise ValueError(f"Expected HierSurv/GenericSurv, but got {cfg['task']}")
@@ -354,22 +351,22 @@ class MyHandler(object):
                 train_set = WSIDataset(self.cfg["csv_path"], self.cfg["h5_dir"], self.cfg["slide_dir"], custom_transforms=self.preprocess, pids=train_pids)
                 val_set = WSIDataset(self.cfg["csv_path"], self.cfg["h5_dir"], self.cfg["slide_dir"], custom_transforms=self.preprocess, pids=val_pids)
                 test_set = WSIDataset(self.cfg["csv_path"], self.cfg["h5_dir"], self.cfg["slide_dir"], custom_transforms=self.preprocess, pids=test_pids)
-
-                train_sampler = DistributedSampler(train_set, num_replicas=self.world_size, rank=self.rank, shuffle=True)
-                val_sampler = DistributedSampler(val_set, num_replicas=self.world_size, rank=self.rank, shuffle=False)
-                test_sampler = DistributedSampler(test_set, num_replicas=self.world_size, rank=self.rank, shuffle=False)
-
+                
+                def wsi_collate_fn(batch):
+                    # 这里 batch 是一个 list，每个元素是 (wsi_dataset, label)
+                    return batch
+                
                 train_loader = DataLoader(
-                    train_set, batch_size=self.cfg['batch_size'], sampler=train_sampler,
-                    num_workers=self.cfg['num_workers'], pin_memory=True, worker_init_fn=seed_worker
+                    train_set, batch_size=self.cfg['batch_size'],
+                    num_workers=self.cfg['num_workers'], pin_memory=True, collate_fn=wsi_collate_fn, worker_init_fn=seed_worker
                 )
                 val_loader = DataLoader(
-                    val_set, batch_size=self.cfg['batch_size'], sampler=val_sampler,
-                    num_workers=self.cfg['num_workers'], pin_memory=True, worker_init_fn=seed_worker
+                    val_set, batch_size=self.cfg['batch_size'], 
+                    num_workers=self.cfg['num_workers'], pin_memory=True, collate_fn=wsi_collate_fn, worker_init_fn=seed_worker
                 )
                 test_loader = DataLoader(
-                    test_set, batch_size=self.cfg['batch_size'], sampler=test_sampler,
-                    num_workers=self.cfg['num_workers'], pin_memory=True, worker_init_fn=seed_worker
+                    test_set, batch_size=self.cfg['batch_size'], 
+                    num_workers=self.cfg['num_workers'], pin_memory=True, collate_fn=wsi_collate_fn, worker_init_fn=seed_worker
                 )
             else:
                 train_loader = DataLoader(train_set, batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
@@ -433,7 +430,6 @@ class MyHandler(object):
         for epoch in range(epochs):
             last_epoch = epoch
             if self.cfg['task'] == 'fine_tuning_clam':
-                train_loader.sampler.set_epoch(epoch)
                 train_cltor, batch_avg_loss = self._train_finetune_epoch(train_loader)
             else:
                 train_cltor, batch_avg_loss = self._train_each_epoch(train_loader)
