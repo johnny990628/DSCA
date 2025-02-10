@@ -26,7 +26,18 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 import openslide
 from datasets.dataset_h5 import Whole_Slide_Bag_FP
+import time
 
+
+class VisualWrapper(torch.nn.Module):
+    def __init__(self, visual_module):
+        super(VisualWrapper, self).__init__()
+        self.visual_module = visual_module
+
+    def forward(self, x):
+        # 調用 forward_no_head 來獲得視覺特徵
+        vis_features = self.visual_module.forward_no_head(x, normalize=False)
+        return vis_features
 
 class SurvLabelTransformer(object):
     """
@@ -163,8 +174,8 @@ class WSIDataset(torch.utils.data.Dataset):
         slide_path = os.path.join(self.slide_dir, f"{slide_id}{self.slide_ext}")
         
         # 使用Whole_Slide_Bag_FP加載WSI
-        wsi = openslide.open_slide(slide_path)
-        wsi_dataset = Whole_Slide_Bag_FP(file_path=h5_path, wsi=wsi, custom_transforms=self.custom_transforms)
+        # wsi = openslide.open_slide(slide_path)
+        wsi_dataset = Whole_Slide_Bag_FP(file_path=h5_path, wsi_path=slide_path, custom_transforms=self.custom_transforms)
 
         # 確保數據格式正確
         if len(wsi_dataset) > 0:
@@ -289,6 +300,8 @@ class MyHandler(object):
         else:
             print(f"[Checkpoint] No checkpoint found at {checkpoint_path}, starting from scratch.")
 
+    
+
     def extract_features(self, wsi_dataset):
         """
         ✅ 即時從 WSI 中提取 Patch-Level 特徵
@@ -297,25 +310,31 @@ class MyHandler(object):
         Returns:
             提取的特徵張量
         """
+        start_time = time.time()
         loader = DataLoader(
-            wsi_dataset, batch_size=32, shuffle=False, num_workers=8, pin_memory=True
+            wsi_dataset, batch_size=256, shuffle=False, num_workers=8, pin_memory=True
         )
         
         features = []
         self.feature_extractor.eval()
+        self.feature_extractor = self.feature_extractor.to(self.device)
+        actual_model = self.feature_extractor.module if hasattr(self.feature_extractor, 'module') else self.feature_extractor
+        
+        visual_wrapper = VisualWrapper(actual_model.visual)
+        
         with torch.no_grad():
-            for imgs in loader:
+            for batch in loader:
+                imgs, coords = batch
                 imgs = imgs.to(self.device)
-
-                # ✅ 提取特徵
-                output = self.feature_extractor(imgs)
-                if isinstance(output, tuple):
-                    vis_features = output[0]
-                else:
-                    vis_features = output
+                if imgs.dim() == 5 and imgs.size(1) == 1:
+                    imgs = imgs.squeeze(1)  # 變為 [B, C, H, W]
                 
+                vis_features = visual_wrapper(imgs)
                 features.append(vis_features.cpu())
 
+            end_time = time.time()  # 結束計時
+            elapsed_time = end_time - start_time
+            print(f"Extract features took {elapsed_time:.3f} seconds.")
         return torch.cat(features, dim=0)
 
     def exec(self):
@@ -541,19 +560,21 @@ class MyHandler(object):
         self.model.train()
         i_batch = 0
 
-        for i, (wsi_dataset, label) in enumerate(train_loader):
+        for i, batch in enumerate(train_loader):
             i_batch += 1
+            wsi_dataset, y = batch[0]
+            y = y.unsqueeze(0)
             
             features = self.extract_features(wsi_dataset)
             features = features.to(self.device)
-            label = label.to(self.device)
+            y = y.to(self.device)
             
             y_hat = self.model(features)
 
             collector = collect_tensor(collector, y.detach().cpu(), y_hat.detach().cpu())
             bp_collector = collect_tensor(bp_collector, y, y_hat)
-
-            torch.cuda.empty_cache()
+            print(f"Label: {y}")
+            print(f"Prediction: {y_hat}")
             if bp_collector['y'].size(0) % bp_every_iters == 0 or bp_collector['y'].size(0)==len(train_loader):
                 # 2. backward propagation
                 if self.cfg['loss'] == 'survple' and torch.sum(bp_collector['y'] > 0).item() <= 0:
@@ -567,8 +588,7 @@ class MyHandler(object):
                 loss = self.loss(bp_collector['y'], bp_collector['y_hat'])
                 # loss += self.loss_l1(self.model.parameters())
                 all_loss.append(loss.item())
-                if self.rank == 0:
-                    print("[training epoch] training batch {}, loss: {:.6f}".format(i_batch, loss.item()))
+                print("[training epoch] training batch {}, loss: {:.6f}".format(i_batch, loss.item()))
 
                 # 2.3 backwards gradients and update networks
                 loss.backward()

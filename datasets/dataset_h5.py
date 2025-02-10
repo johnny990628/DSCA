@@ -7,6 +7,7 @@ import math
 import re
 import pdb
 import pickle
+import openslide
 
 from torch.utils.data import Dataset, DataLoader, sampler
 from torchvision import transforms, utils, models
@@ -95,7 +96,7 @@ class Whole_Slide_Bag(Dataset):
 class Whole_Slide_Bag_FP(Dataset):
 	def __init__(self,
 		file_path,
-		wsi,
+		wsi_path,
 		imagenet_pretrained=False,
 		custom_transforms=None,
 		custom_downsample=1,
@@ -120,7 +121,7 @@ class Whole_Slide_Bag_FP(Dataset):
 			vertical_flip (bool): Apply vertical flip to patch images
 		"""
 		self.imagenet_pretrained=imagenet_pretrained
-		self.wsi = wsi
+		self.wsi_path = wsi_path
 		self.sampler_setting = sampler_setting
 		self.color_normalizer = color_normalizer
 		self.color_augmenter = color_augmenter
@@ -185,7 +186,8 @@ class Whole_Slide_Bag_FP(Dataset):
 
 	def __getitem__(self, idx):
 		coord = self.coords[idx]
-		img = self.wsi.read_region(coord, self.patch_level, (self.patch_size, self.patch_size)).convert('RGB')
+		wsi = openslide.open_slide(self.wsi_path)
+		img = wsi.read_region(coord, self.patch_level, (self.patch_size, self.patch_size)).convert('RGB')
 		
 		# Resize image first according to the specified target patch size
 		if self.target_patch_size is not None and self.target_patch_size[0] != self.patch_size:
