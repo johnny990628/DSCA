@@ -312,12 +312,12 @@ class MyHandler(object):
         """
         start_time = time.time()
         loader = DataLoader(
-            wsi_dataset, batch_size=256, shuffle=False, num_workers=8, pin_memory=True
+            wsi_dataset, batch_size=256, shuffle=False, num_workers=10, pin_memory=True
         )
         
         features = []
         self.feature_extractor.eval()
-        self.feature_extractor = self.feature_extractor.to(self.device)
+        self.feature_extractor = self.feature_extractor
         actual_model = self.feature_extractor.module if hasattr(self.feature_extractor, 'module') else self.feature_extractor
         
         visual_wrapper = VisualWrapper(actual_model.visual)
@@ -633,10 +633,12 @@ class MyHandler(object):
         model.eval()
         res = {'y': None, 'y_hat': None}
         with torch.no_grad():
-            for i, (wsi_dataset, label) in enumerate(loader):
+            for i, batch in enumerate(loader):
+                wsi_dataset, y = batch[0]
+                y = y.unsqueeze(0)
                 features = self.extract_features(wsi_dataset)
                 features = features.to(self.device)
-                y = label.to(self.device)
+                y = y.to(self.device)
                 y_hat = model(features)
                 res = collect_tensor(res, y.detach().cpu(), y_hat.detach().cpu())
         return res
