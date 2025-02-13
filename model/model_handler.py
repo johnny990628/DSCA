@@ -563,7 +563,6 @@ class MyHandler(object):
         for i, batch in enumerate(train_loader):
             i_batch += 1
             wsi_dataset, y = batch[0]
-            y = y.unsqueeze(0)
             
             features = self.extract_features(wsi_dataset)
             features = features.to(self.device)
