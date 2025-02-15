@@ -7,6 +7,7 @@ from torch.optim import lr_scheduler
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 from utils.parallel import DataParallelModel, DataParallelCriterion
+
 from torch.nn.parallel.scatter_gather import scatter
 from .conch import create_model_from_pretrained
 
@@ -27,6 +28,7 @@ from torch.utils.data.distributed import DistributedSampler
 import openslide
 from datasets.dataset_h5 import Whole_Slide_Bag_FP
 import time
+from torch.cuda.amp import autocast
 
 
 class VisualWrapper(torch.nn.Module):
@@ -193,9 +195,21 @@ class MyHandler(object):
     """
     def __init__(self, cfg):
         # set up for seed and device
-        self.device = torch.device("cuda:0")
+        # self.device = torch.device("cuda:0")
         torch.cuda.set_device(cfg['cuda_id'])
         seed_everything(cfg['seed'])
+
+        self.rank = int(os.environ['RANK'])
+        self.world_size = int(os.environ['WORLD_SIZE'])
+        self.device = torch.device(f'cuda:{self.rank}')
+        # 初始化进程组
+        dist.init_process_group(
+            backend='nccl',
+            init_method='env://',
+            world_size=self.world_size,
+            rank=self.rank
+        )
+    
 
         # set up for path
         self.writer = SummaryWriter(cfg['save_path'])
@@ -255,9 +269,9 @@ class MyHandler(object):
                 checkpoint_path=cfg["ckpt_path"],
                 force_image_size=cfg["target_patch_size"]
             )
-            
-            self.feature_extractor.to(self.device)
-            self.feature_extractor = torch.nn.DataParallel(self.feature_extractor)
+            self.feature_extractor = self.feature_extractor.to(self.device)
+            # 使用 DDP 包装特征提取器
+            self.feature_extractor = DDP(self.feature_extractor, device_ids=[self.rank])
             print(f"Load Foundation Model Successfully!")
             # ✅ 加載 Survival Model 並使用 DDP
             self.model = CLAM_Survival(dims=dims).to(self.device)
@@ -302,40 +316,83 @@ class MyHandler(object):
 
     
 
-    def extract_features(self, wsi_dataset):
-        """
-        ✅ 即時從 WSI 中提取 Patch-Level 特徵
-        Args:
-            wsi_dataset: 單個 WSI 數據集
-        Returns:
-            提取的特徵張量
-        """
-        start_time = time.time()
-        loader = DataLoader(
-            wsi_dataset, batch_size=256, shuffle=False, num_workers=10, pin_memory=True
+    # def extract_features(self, wsi_dataset):
+    #     """
+    #     ✅ 即時從 WSI 中提取 Patch-Level 特徵
+    #     Args:
+    #         wsi_dataset: 單個 WSI 數據集
+    #     Returns:
+    #         提取的特徵張量
+    #     """
+    #     start_time = time.time()
+    #     loader = DataLoader(
+    #         wsi_dataset, batch_size=256, shuffle=False, num_workers=8, pin_memory=True
+    #     )
+        
+    #     features = []
+    #     self.feature_extractor.eval()
+    #     self.feature_extractor = self.feature_extractor
+    #     actual_model = self.feature_extractor.module if hasattr(self.feature_extractor, 'module') else self.feature_extractor
+        
+    #     visual_wrapper = VisualWrapper(actual_model.visual)
+        
+    #     with torch.no_grad():
+    #         for batch in loader:
+    #             imgs, coords = batch
+    #             imgs = imgs.to(self.device)
+    #             if imgs.dim() == 5 and imgs.size(1) == 1:
+    #                 imgs = imgs.squeeze(1)  # 變為 [B, C, H, W]
+                
+    #             vis_features = visual_wrapper(imgs)
+    #             features.append(vis_features.cpu())
+
+    #         end_time = time.time()  # 結束計時
+    #         elapsed_time = end_time - start_time
+    #         print(f"Extract features took {elapsed_time:.3f} seconds.")
+    #     return torch.cat(features, dim=0)
+
+    def extract_features(self, wsi_bag):
+        
+        sampler = DistributedSampler(wsi_bag, shuffle=False)
+        def wsi_collate_fn(batch):
+            patches = [item[0] for item in batch]  # 提取所有 patches
+            patches = torch.cat(patches, dim=0).half()     # 拼接 patches
+            return patches
+
+        patch_loader = DataLoader(
+            wsi_bag,
+            batch_size=256,
+            sampler=sampler,
+            num_workers=8,
+            pin_memory=True,
+            collate_fn=wsi_collate_fn
         )
         
         features = []
         self.feature_extractor.eval()
-        self.feature_extractor = self.feature_extractor
-        actual_model = self.feature_extractor.module if hasattr(self.feature_extractor, 'module') else self.feature_extractor
-        
-        visual_wrapper = VisualWrapper(actual_model.visual)
-        
-        with torch.no_grad():
-            for batch in loader:
-                imgs, coords = batch
-                imgs = imgs.to(self.device)
+        visual_wrapper = VisualWrapper(self.feature_extractor.module.visual)
+        with torch.no_grad(), autocast():
+            for imgs in patch_loader:
                 if imgs.dim() == 5 and imgs.size(1) == 1:
                     imgs = imgs.squeeze(1)  # 變為 [B, C, H, W]
-                
+                imgs = imgs.to(self.device)
                 vis_features = visual_wrapper(imgs)
-                features.append(vis_features.cpu())
+                features.append(vis_features.detach().cpu())
+        
+        # 聚合当前 GPU 的特征
+        features = torch.cat(features, dim=0) if features else torch.empty(0)
+        
+        # 跨 GPU 收集所有特征
+        features = features.to(self.device)
+        gathered_features = [torch.empty_like(features) for _ in range(self.world_size)]
+        dist.all_gather(gathered_features, features)
+        
+        if self.rank == 0:
+            all_features = torch.cat(gathered_features, dim=0)
+            return all_features.to(self.device)
+        return None
 
-            end_time = time.time()  # 結束計時
-            elapsed_time = end_time - start_time
-            print(f"Extract features took {elapsed_time:.3f} seconds.")
-        return torch.cat(features, dim=0)
+    
 
     def exec(self):
         task = self.cfg['task']
@@ -453,6 +510,9 @@ class MyHandler(object):
             else:
                 train_cltor, batch_avg_loss = self._train_each_epoch(train_loader)
             
+            if self.rank != 0:
+                continue
+            
             self.writer.add_scalar('loss/train_batch_avg_loss', batch_avg_loss, epoch+1)
             
             if measure:
@@ -563,17 +623,24 @@ class MyHandler(object):
         for i, batch in enumerate(train_loader):
             i_batch += 1
             wsi_dataset, y = batch[0]
-            
-            features = self.extract_features(wsi_dataset)
-            features = features.to(self.device)
+            y = y.unsqueeze(0)
             y = y.to(self.device)
+
+            start_time = time.time()
+            features = self.extract_features(wsi_dataset)
+            end_time = time.time()  # 結束計時
+            elapsed_time = end_time - start_time
+            print(f"Extract features took {elapsed_time:.3f} seconds.")
+
+            if self.rank != 0:
+                continue
             
             y_hat = self.model(features)
+            y_hat = y_hat.view(-1)  
 
             collector = collect_tensor(collector, y.detach().cpu(), y_hat.detach().cpu())
             bp_collector = collect_tensor(bp_collector, y, y_hat)
-            print(f"Label: {y}")
-            print(f"Prediction: {y_hat}")
+
             if bp_collector['y'].size(0) % bp_every_iters == 0 or bp_collector['y'].size(0)==len(train_loader):
                 # 2. backward propagation
                 if self.cfg['loss'] == 'survple' and torch.sum(bp_collector['y'] > 0).item() <= 0:
@@ -595,7 +662,11 @@ class MyHandler(object):
                 
                 bp_collector = {'y': None, 'y_hat': None}
 
-        return collector, sum(all_loss)/len(all_loss)
+        if len(all_loss) == 0:
+            batch_avg_loss = 0.0
+        else:
+            batch_avg_loss = sum(all_loss) / len(all_loss)
+        return collector, batch_avg_loss
 
 
     @staticmethod
@@ -639,6 +710,7 @@ class MyHandler(object):
                 features = features.to(self.device)
                 y = y.to(self.device)
                 y_hat = model(features)
+                y_hat = y_hat.view(-1)
                 res = collect_tensor(res, y.detach().cpu(), y_hat.detach().cpu())
         return res
     

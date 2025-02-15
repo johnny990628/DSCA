@@ -386,7 +386,7 @@ class CLAM_Survival(nn.Module):
         return torch.full((length,), 0, device=device).long()
 
     def forward(self, h, epoch=0, label=None, instance_eval=False, return_features=False, attention_only=False):
-        device = h.device
+
         h=h.squeeze(0)
         A, h = self.attention_net(h)  # NxK
         A = torch.transpose(A, 1, 0)  # KxN

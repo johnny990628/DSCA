@@ -29,17 +29,17 @@ def concordance_index(
     if isinstance(y_true, Tensor):
         y_true = y_true.numpy()
 
-    if y_true.shape[1] == 1: # coxph model
-        y_true = np.squeeze(y_true)
-        y_pred = np.squeeze(y_pred)
-        t = np.abs(y_true)
-        e = (y_true > 0).astype(bool)
-        return ci(e, t, -y_pred, tied_tol=1e-08)[0]
-    else: # discrete model
-        y_t, y_e = y_true[:, 0], (1 - y_true[:, 1]).astype(np.bool_)
-        survival = np.cumprod(1.0 - y_pred, axis=1)
-        risk = np.sum(survival, axis=1)
-        return ci(y_e, y_t, -risk, tied_tol=1e-08)[0]
+   
+    # y_true = np.squeeze(y_true)
+    # y_pred = np.squeeze(y_pred)
+    t = np.abs(y_true)
+    e = (y_true > 0).astype(bool)
+    return ci(e, t, -y_pred, tied_tol=1e-08)[0]
+    # else: # discrete model
+    #     y_t, y_e = y_true[:, 0], (1 - y_true[:, 1]).astype(np.bool_)
+    #     survival = np.cumprod(1.0 - y_pred, axis=1)
+    #     risk = np.sum(survival, axis=1)
+    #     return ci(y_e, y_t, -risk, tied_tol=1e-08)[0]
 
 
 def evaluator(y, y_hat, metrics='cindex', **kws):
