@@ -174,15 +174,15 @@ class Whole_Slide_Bag_FP(Dataset):
 		for name, value in dset.attrs.items():
 			print(name, value)
 
-		print('\nfeature extraction settings:')
-		print('-- target patch size: ', self.target_patch_size)
-		print('-- imagenet_pretrained: ', self.imagenet_pretrained)
-		print('-- patches sampler:', self.sampler_setting)
-		print('-- color normalization:', self.color_normalizer)
-		print('-- color argmentation:', self.color_augmenter)
-		print('-- add_patch_noise:', self.add_patch_noise)
-		print('-- vertical_flip:', self.vertical_flip)
-		print('-- transformations: ', self.roi_transforms)
+		# print('\nfeature extraction settings:')
+		# print('-- target patch size: ', self.target_patch_size)
+		# print('-- imagenet_pretrained: ', self.imagenet_pretrained)
+		# print('-- patches sampler:', self.sampler_setting)
+		# print('-- color normalization:', self.color_normalizer)
+		# print('-- color argmentation:', self.color_augmenter)
+		# print('-- add_patch_noise:', self.add_patch_noise)
+		# print('-- vertical_flip:', self.vertical_flip)
+		# print('-- transformations: ', self.roi_transforms)
 
 	def __getitem__(self, idx):
 		coord = self.coords[idx]

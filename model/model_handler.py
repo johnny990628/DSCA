@@ -621,6 +621,7 @@ class MyHandler(object):
         i_batch = 0
 
         for i, batch in enumerate(train_loader):
+            print(f"===Process {i+1}/{len(train_loader)} WSI===")
             i_batch += 1
             wsi_dataset, y = batch[0]
             y = y.unsqueeze(0)
