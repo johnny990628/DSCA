@@ -609,7 +609,7 @@ class FineTuningModel(torch.nn.Module):
                     imgs = imgs.squeeze(1)
                 imgs = imgs.to(next(self.feature_extractor.parameters()).device)
                 # 使用 foundation model 提取特徵（使用 forward_no_head 得到中間特徵）
-                feats = self.feature_extractor.forward_no_head(imgs, normalize=False)
+                feats = self.feature_extractor.base_model.visual.forward_no_head(imgs, normalize=False)
                 all_features.append(feats)
         if len(all_features) > 0:
             features = torch.cat(all_features, dim=0)

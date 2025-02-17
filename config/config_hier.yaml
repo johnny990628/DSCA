@@ -6,10 +6,10 @@ seed_data_split: 0 # for 5-fold evaluation
 path_data_split: ./data_split/tcga_luad_merged/tcga_luad_merged-seed42-fold{}.npz
 
 # fine tuning
-csv_path: /data1/johnny99457/DSCA/data_split/tcga_luad_merged/tcga_luad_merged_path_full.csv
-h5_dir: /data1/johnny99457/PATCHES/LUAD/tiles-5x-s224
-slide_dir: /data1/johnny99457/DATASETS/TCGA/LUAD
-ckpt_path: /data1/johnny99457/CLAM/checkpoints/conch/pytorch_model.bin
+csv_path: /work/u6658716/TCGA-LUAD/DSCA/data_split/tcga_luad_merged/tcga_luad_merged_path_full.csv
+h5_dir: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-5x-s224
+slide_dir: /work/u6658716/TCGA-LUAD/DATASETS/TCGA/LUAD
+ckpt_path: /work/u6658716/TCGA-LUAD/CLAM/checkpoints/conch/pytorch_model.bin
 target_patch_size: 224
 
 # data
