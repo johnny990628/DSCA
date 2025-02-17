@@ -12,7 +12,7 @@ from torch.nn.parallel.scatter_gather import scatter
 from .conch import create_model_from_pretrained
 
 
-from .HierNet import WSIGenericNet, WSIHierNet, WSIGenericCAPNet, CLAM_Survival, MCAT_Surv
+from .HierNet import WSIGenericNet, WSIHierNet, WSIGenericCAPNet, CLAM_Survival, MCAT_Surv, FineTuningModel
 from .model_utils import init_weights
 from utils import *
 from loss import create_survloss, loss_reg_l1
@@ -25,21 +25,10 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
-import openslide
 from datasets.dataset_h5 import Whole_Slide_Bag_FP
 import time
-from torch.cuda.amp import autocast
+from peft import LoraConfig, get_peft_model, TaskType
 
-
-class VisualWrapper(torch.nn.Module):
-    def __init__(self, visual_module):
-        super(VisualWrapper, self).__init__()
-        self.visual_module = visual_module
-
-    def forward(self, x):
-        # 調用 forward_no_head 來獲得視覺特徵
-        vis_features = self.visual_module.forward_no_head(x, normalize=False)
-        return vis_features
 
 class SurvLabelTransformer(object):
     """
@@ -209,8 +198,6 @@ class MyHandler(object):
             world_size=self.world_size,
             rank=self.rank
         )
-    
-
         # set up for path
         self.writer = SummaryWriter(cfg['save_path'])
         self.last_ckpt_path = osp.join(cfg['save_path'], 'model-last.pth')
@@ -264,17 +251,26 @@ class MyHandler(object):
             print(f"[Setup] Early Fusion Approch: {str(cfg['early_fusion'])}")
         elif cfg['task'] == 'fine_tuning_clam':
              # ✅ 加載 Foundation Model
-            self.feature_extractor, self.preprocess = create_model_from_pretrained(
+            foundation_model, self.preprocess = create_model_from_pretrained(
                 "conch_ViT-B-16", 
                 checkpoint_path=cfg["ckpt_path"],
                 force_image_size=cfg["target_patch_size"]
             )
-            self.feature_extractor = self.feature_extractor.to(self.device)
-            # 使用 DDP 包装特征提取器
-            self.feature_extractor = DDP(self.feature_extractor, device_ids=[self.rank])
-            print(f"Load Foundation Model Successfully!")
-            # ✅ 加載 Survival Model 並使用 DDP
-            self.model = CLAM_Survival(dims=dims).to(self.device)
+            peft_config = LoraConfig(
+                task_type=TaskType.FEATURE_EXTRACTION,  # 若有針對 CV 任務的 task_type，也可以試試 TaskType.CV_FEATURE_EXTRACTION
+                r=8,
+                lora_alpha=32,
+                lora_dropout=0.1,
+                target_modules=["query", "key", "value"],
+                bias="none",
+                inference_mode=False
+            )
+            foundation_model = get_peft_model(foundation_model, peft_config)
+            # 3. 載入 Survival Model（例如 CLAM_Survival）
+            survival_model = CLAM_Survival(dims=dims)
+            self.model = FineTuningModel(foundation_model, survival_model)
+            self.model = self.model.to(self.device)
+            self.model = DDP(self.model, device_ids=[self.rank], output_device=self.rank)
             self.load_checkpoint(self.best_ckpt_path)  # 載入最好的 survival model
             print(f"Load Survival Model Successfully!")
         else:
@@ -314,85 +310,15 @@ class MyHandler(object):
         else:
             print(f"[Checkpoint] No checkpoint found at {checkpoint_path}, starting from scratch.")
 
-    
-
-    # def extract_features(self, wsi_dataset):
-    #     """
-    #     ✅ 即時從 WSI 中提取 Patch-Level 特徵
-    #     Args:
-    #         wsi_dataset: 單個 WSI 數據集
-    #     Returns:
-    #         提取的特徵張量
-    #     """
-    #     start_time = time.time()
-    #     loader = DataLoader(
-    #         wsi_dataset, batch_size=256, shuffle=False, num_workers=8, pin_memory=True
-    #     )
-        
-    #     features = []
-    #     self.feature_extractor.eval()
-    #     self.feature_extractor = self.feature_extractor
-    #     actual_model = self.feature_extractor.module if hasattr(self.feature_extractor, 'module') else self.feature_extractor
-        
-    #     visual_wrapper = VisualWrapper(actual_model.visual)
-        
-    #     with torch.no_grad():
-    #         for batch in loader:
-    #             imgs, coords = batch
-    #             imgs = imgs.to(self.device)
-    #             if imgs.dim() == 5 and imgs.size(1) == 1:
-    #                 imgs = imgs.squeeze(1)  # 變為 [B, C, H, W]
-                
-    #             vis_features = visual_wrapper(imgs)
-    #             features.append(vis_features.cpu())
-
-    #         end_time = time.time()  # 結束計時
-    #         elapsed_time = end_time - start_time
-    #         print(f"Extract features took {elapsed_time:.3f} seconds.")
-    #     return torch.cat(features, dim=0)
-
-    def extract_features(self, wsi_bag):
-        
-        sampler = DistributedSampler(wsi_bag, shuffle=False)
-        def wsi_collate_fn(batch):
-            patches = [item[0] for item in batch]  # 提取所有 patches
-            patches = torch.cat(patches, dim=0).half()     # 拼接 patches
-            return patches
-
-        patch_loader = DataLoader(
-            wsi_bag,
-            batch_size=256,
-            sampler=sampler,
-            num_workers=8,
-            pin_memory=True,
-            collate_fn=wsi_collate_fn
-        )
-        
-        features = []
-        self.feature_extractor.eval()
-        visual_wrapper = VisualWrapper(self.feature_extractor.module.visual)
-        with torch.no_grad(), autocast():
-            for imgs in patch_loader:
-                if imgs.dim() == 5 and imgs.size(1) == 1:
-                    imgs = imgs.squeeze(1)  # 變為 [B, C, H, W]
-                imgs = imgs.to(self.device)
-                vis_features = visual_wrapper(imgs)
-                features.append(vis_features.detach().cpu())
-        
-        # 聚合当前 GPU 的特征
-        features = torch.cat(features, dim=0) if features else torch.empty(0)
-        
-        # 跨 GPU 收集所有特征
-        features = features.to(self.device)
-        gathered_features = [torch.empty_like(features) for _ in range(self.world_size)]
-        dist.all_gather(gathered_features, features)
-        
+    def _save_lora_checkpoint(self, epoch):
         if self.rank == 0:
-            all_features = torch.cat(gathered_features, dim=0)
-            return all_features.to(self.device)
-        return None
+            # 這裡我們假設 lora 模組附加在 feature_extractor 上
+            lora_ckpt_dir = osp.join(self.cfg['save_path'], f"lora_checkpoint_epoch_{epoch}")
+            os.makedirs(lora_ckpt_dir, exist_ok=True)
+            # 由於模型經過 DDP 包裝，因此需要先取得 module
+            self.model.module.feature_extractor.save_pretrained(lora_ckpt_dir)
+            print(f"[Checkpoint] Saved LoRA checkpoint at {lora_ckpt_dir}")
 
-    
 
     def exec(self):
         task = self.cfg['task']
@@ -432,18 +358,22 @@ class MyHandler(object):
                     # 这里 batch 是一个 list，每个元素是 (wsi_dataset, label)
                     return batch
                 
+                train_sampler = DistributedSampler(train_set, num_replicas=self.world_size, rank=self.rank, shuffle=True)
+                
                 train_loader = DataLoader(
-                    train_set, batch_size=self.cfg['batch_size'],
-                    num_workers=self.cfg['num_workers'], pin_memory=True, collate_fn=wsi_collate_fn, worker_init_fn=seed_worker
-                )
+                    train_set, batch_size=self.cfg['batch_size'],sampler=train_sampler,
+                    num_workers=self.cfg['num_workers'], pin_memory=True, worker_init_fn=seed_worker)
                 val_loader = DataLoader(
                     val_set, batch_size=self.cfg['batch_size'], 
-                    num_workers=self.cfg['num_workers'], pin_memory=True, collate_fn=wsi_collate_fn, worker_init_fn=seed_worker
-                )
+                    num_workers=self.cfg['num_workers'], pin_memory=True, worker_init_fn=seed_worker)
                 test_loader = DataLoader(
                     test_set, batch_size=self.cfg['batch_size'], 
-                    num_workers=self.cfg['num_workers'], pin_memory=True, collate_fn=wsi_collate_fn, worker_init_fn=seed_worker
-                )
+                    num_workers=self.cfg['num_workers'], pin_memory=True, worker_init_fn=seed_worker)
+                 # Train
+                val_name = 'validation'
+                val_loaders = {'validation': val_loader, 'test': test_loader}
+                self._run_training(train_loader, train_sampler=train_sampler, val_loaders=val_loaders, val_name=val_name, measure=True, save=False)
+
             else:
                 train_loader = DataLoader(train_set, batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
                     num_workers=self.cfg['num_workers'], shuffle=True,  worker_init_fn=seed_worker)
@@ -459,10 +389,10 @@ class MyHandler(object):
                     test_pids = None
                     test_loader = None
             
-            # Train
-            val_name = 'validation'
-            val_loaders = {'validation': val_loader, 'test': test_loader}
-            self._run_training(train_loader, val_loaders=val_loaders, val_name=val_name, measure=True, save=False)
+                # Train
+                val_name = 'validation'
+                val_loaders = {'validation': val_loader, 'test': test_loader}
+                self._run_training(train_loader, val_loaders=val_loaders, val_name=val_name, measure=True, save=False)
 
             # Evals
             metrics = dict()
@@ -484,7 +414,7 @@ class MyHandler(object):
 
         return metrics
 
-    def _run_training(self, train_loader, val_loaders=None, val_name=None, measure=True, save=True, **kws):
+    def _run_training(self, train_loader, train_sampler=None, val_loaders=None, val_name=None, measure=True, save=True, **kws):
         """Traing model.
 
         Args:
@@ -506,6 +436,7 @@ class MyHandler(object):
         for epoch in range(epochs):
             last_epoch = epoch
             if self.cfg['task'] == 'fine_tuning_clam':
+                train_sampler.set_epoch(epoch)
                 train_cltor, batch_avg_loss = self._train_finetune_epoch(train_loader)
             else:
                 train_cltor, batch_avg_loss = self._train_each_epoch(train_loader)
@@ -548,9 +479,12 @@ class MyHandler(object):
                 if self.early_stop.if_stop():
                     last_epoch = epoch + 1
                     break
+
+            if self.rank == 0:
+                self._save_lora_checkpoint(epoch+1)
             
             self.writer.flush()
-
+           
         if save:
             torch.save(self.model.state_dict(), self.last_ckpt_path)
             self._save_checkpoint(epoch, val_metrics)
@@ -621,24 +555,19 @@ class MyHandler(object):
         i_batch = 0
 
         for i, batch in enumerate(train_loader):
+            
             print(f"===Process {i+1}/{len(train_loader)} WSI===")
             i_batch += 1
             wsi_dataset, y = batch[0]
-            y = y.unsqueeze(0)
-            y = y.to(self.device)
+            y = y.unsqueeze(0).to(self.device)
 
             start_time = time.time()
-            features = self.extract_features(wsi_dataset)
+            y_hat = self.model(wsi_dataset)
+            y_hat = y_hat.view(-1)  
             end_time = time.time()  # 結束計時
             elapsed_time = end_time - start_time
             print(f"Extract features took {elapsed_time:.3f} seconds.")
-
-            if self.rank != 0:
-                continue
             
-            y_hat = self.model(features)
-            y_hat = y_hat.view(-1)  
-
             collector = collect_tensor(collector, y.detach().cpu(), y_hat.detach().cpu())
             bp_collector = collect_tensor(bp_collector, y, y_hat)
 
@@ -649,18 +578,13 @@ class MyHandler(object):
                     bp_collector = {'y': None, 'y_hat': None}
                     continue
                 
-                # 2.1 zero gradients buffer
                 self.optimizer.zero_grad()
-                # 2.2 calculate loss
                 loss = self.loss(bp_collector['y'], bp_collector['y_hat'])
-                # loss += self.loss_l1(self.model.parameters())
                 all_loss.append(loss.item())
                 print("[training epoch] training batch {}, loss: {:.6f}".format(i_batch, loss.item()))
 
-                # 2.3 backwards gradients and update networks
                 loss.backward()
                 self.optimizer.step()
-                
                 bp_collector = {'y': None, 'y_hat': None}
 
         if len(all_loss) == 0:
@@ -706,21 +630,8 @@ class MyHandler(object):
         with torch.no_grad():
             for i, batch in enumerate(loader):
                 wsi_dataset, y = batch[0]
-                y = y.unsqueeze(0)
-                features = self.extract_features(wsi_dataset)
-                features = features.to(self.device)
-                y = y.to(self.device)
-                y_hat = model(features)
+                y = y.unsqueeze(0).to(self.device)
+                y_hat = model(wsi_dataset)
                 y_hat = y_hat.view(-1)
                 res = collect_tensor(res, y.detach().cpu(), y_hat.detach().cpu())
         return res
-    
-    def _save_checkpoint(self, epoch, best_val_loss):
-        checkpoint = {
-            "epoch": epoch,
-            "model_state_dict": self.model.module.state_dict(),  # DDP 需要用 `module`
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "best_val_loss": best_val_loss,
-        }
-        torch.save(checkpoint, self.cfg['save_path'] + f"/fine_tuned_checkpoint.pth")
-        print(f"[Checkpoint] Best model saved at epoch {epoch + 1} with loss {best_val_loss:.4f}")

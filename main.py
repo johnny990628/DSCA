@@ -48,7 +48,6 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', '-f', required=True, type=str, help='path to the config file')
     parser.add_argument('--multi_run', action='store_true', help='flag: multi run')
-    parser.add_argument('--local_rank', type=int, default=0, help='Local rank for distributed training')  # Add local_rank
     args = vars(parser.parse_args())
     return args
 

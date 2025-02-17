@@ -6,7 +6,8 @@ import torch.nn as nn
 from .model_utils import *
 from .model_utils_extra import GAPool
 from .mcat_coattn import *
-
+from torch.utils.data import DataLoader
+from torch.cuda.amp import autocast
 
 ###########################################################
 #  A generic network for WSI with **single magnitude**.
@@ -475,105 +476,6 @@ class BilinearFusion(nn.Module):
         out = self.encoder2(out)
         return out
 
-###########################
-### MCAT Implementation ###
-###########################
-# class MCAT_Surv(nn.Module):
-#     def __init__(self, wsi_dims, cell_dims, fusion='concat', dropout=0.25):
-#         r"""
-#         Multimodal Co-Attention Transformer (MCAT) Implementation.
-
-#         Args:
-#             fusion (str): Late fusion method (Choices: concat, bilinear, or None)
-#             omic_sizes (List): List of sizes of genomic embeddings
-#             model_size_wsi (str): Size of WSI encoder (Choices: small or large)
-#             model_size_omic (str): Size of Genomic encoder (Choices: small or large)
-#             dropout (float): Dropout rate
-#             n_classes (int): Output shape of NN
-#         """
-#         super(MCAT_Surv, self).__init__()
-#         self.fusion = fusion
-#         # self.n_classes = n_classes
-#         # self.size_dict_WSI = {"small": [1024, 256, 256], "big": [1024, 512, 384]}
-#         # self.size_dict_cell = {'small': [1024, 256, 256], 'big': [1024, 1024, 1024, 256]}
-#         #self.criterion = SupConLoss(temperature=0.7)
-        
-#         ### FC Layer over WSI bag
-#         wsi_size = wsi_dims
-#         wsi_fc = [nn.Linear(wsi_size[0], wsi_size[2]), nn.ReLU()]
-#         wsi_fc.append(nn.Dropout(0.25))
-#         self.wsi_net = nn.Sequential(*wsi_fc)
-        
-#         ### Constructing Genomic SNN
-#         cell_size = cell_dims
-#         cell_fc = [nn.Linear(cell_size[0], cell_size[2]), nn.ReLU()]
-#         cell_fc.append(nn.Dropout(0.25))
-#         self.cell_net = nn.Sequential(*cell_fc)
-
-#         ### Multihead Attention
-#         self.coattn = MultiheadAttention(embed_dim=128, num_heads=1)
-
-#         ### Path Transformer + Attention Head
-#         path_encoder_layer = nn.TransformerEncoderLayer(d_model=256, nhead=1, dim_feedforward=512, dropout=dropout, activation='relu')
-#         self.path_transformer = nn.TransformerEncoder(path_encoder_layer, num_layers=2)
-#         self.path_attention_head = Attn_Net_Gated(L=wsi_size[2], D=wsi_size[2], dropout=dropout, n_classes=1)
-#         self.path_rho = nn.Sequential(*[nn.Linear(wsi_size[2], wsi_size[2]), nn.ReLU(), nn.Dropout(dropout)])
-        
-#         ### Omic Transformer + Attention Head
-#         cell_encoder_layer = nn.TransformerEncoderLayer(d_model=256, nhead=1, dim_feedforward=512, dropout=dropout, activation='relu')
-#         self.cell_transformer = nn.TransformerEncoder(cell_encoder_layer, num_layers=2)
-#         self.cell_attention_head = Attn_Net_Gated(L=cell_size[2], D=cell_size[2], dropout=dropout, n_classes=1)
-#         self.cell_rho = nn.Sequential(*[nn.Linear(cell_size[2], cell_size[2]), nn.ReLU(), nn.Dropout(dropout)])
-        
-#         ### Fusion Layer
-#         if self.fusion == 'concat':
-#             self.mm = nn.Sequential(*[nn.Linear(256*2, wsi_size[2]), nn.ReLU(), nn.Linear(wsi_size[2], wsi_size[2]), nn.ReLU()])
-#         elif self.fusion == 'bilinear':
-#             self.mm = BilinearFusion(dim1=256, dim2=256, scale_dim1=8, scale_dim2=8, mmhid=256)
-#         else:
-#             self.mm = None
-        
-#         ### Classifier
-#         self.classifier = nn.Linear(wsi_size[2], 1)
-
-#     def forward(self, x_path, x_cell):
-
-#         x_path = x_path.squeeze(0)
-#         x_cell = x_cell.squeeze(0)
-#         ### Bag-Level Representation
-#         h_path_bag = self.wsi_net(x_path).unsqueeze(1) ### path embeddings are fed through a FC layer
-#         h_cell_bag = self.cell_net(x_cell).unsqueeze(1) ### each omic signature goes through it's own FC layer
-        
-#         ### Genomic-Guided Co-Attention
-#         h_path_coattn, A_coattn = self.coattn(h_cell_bag, h_path_bag, h_path_bag) # Q, K, V
-
-#         ### Set-Based MIL Transformers
-#         h_path_trans = self.path_transformer(h_path_coattn)
-#         h_cell_trans = self.cell_transformer(h_cell_bag)
-        
-#         ### Global Attention Pooling
-#         A_path, h_path = self.path_attention_head(h_path_trans.squeeze(1))
-#         A_path = torch.transpose(A_path, 1, 0)
-#         h_path = torch.mm(F.softmax(A_path, dim=1) , h_path)
-#         h_path = self.path_rho(h_path).squeeze()
-        
-#         A_cell, h_cell = self.cell_attention_head(h_cell_trans.squeeze(1))
-#         A_cell = torch.transpose(A_cell, 1, 0)
-#         h_cell = torch.mm(F.softmax(A_cell, dim=1) , h_cell)
-#         h_cell = self.cell_rho(h_cell).squeeze()
-        
-#         ### Late Fusion
-#         if self.fusion == 'bilinear':
-#             h = self.mm(h_path.unsqueeze(dim=0), h_cell.unsqueeze(dim=0)).squeeze()
-#         elif self.fusion == 'concat':
-#             h = self.mm(torch.cat([h_path, h_cell], axis=0))
-
-#         ### Survival Layer
-#         risk_score = self.classifier(h)  # 修改為直接輸出風險分數
-        
-#         attention_scores = {'coattn': A_coattn, 'path': A_path, 'omic': A_cell}
-    
-#         return risk_score
 
 class MCAT_Surv(nn.Module):
     def __init__(self, dims, cell_in_dim, top_k=100, fusion='concat', dropout=0.25):
@@ -659,3 +561,60 @@ class MCAT_Surv(nn.Module):
         risk_score = self.classifier(h_path.squeeze())
     
         return risk_score
+
+class FineTuningModel(torch.nn.Module):
+    def __init__(self, feature_extractor, survival_model, patch_batch_size=256, num_workers=8):
+        """
+        Args:
+            feature_extractor: foundation model，用於提取 patch-level 特徵，要求提供 forward_no_head 方法。
+            survival_model: 用於生存分析的模型（例如 CLAM_Survival)。
+            patch_batch_size: 在內部 DataLoader 中每個 batch 處理的 patch 數量。
+            num_workers: DataLoader 的工作線程數量。
+        """
+        super(FineTuningModel, self).__init__()
+        self.feature_extractor = feature_extractor
+        self.survival_model = survival_model
+        self.patch_batch_size = patch_batch_size
+        self.num_workers = num_workers
+
+    def forward(self, wsi_bag):
+        """
+        Args:
+            wsi_bag: 一個 WSI 的 patch bag，類型為 Whole_Slide_Bag_FP（或相容類型），
+                     該對象實現 __len__ 和 __getitem__，每個元素為 (patch_tensor, ...)
+
+        Returns:
+            survival model 的輸出結果
+        """
+        # 定義 collate 函數：將所有 patch 拼接成一個大 tensor
+        def collate_fn(batch):
+            # 假設 batch 中的每個元素是個 tuple，patch 為第一個元素
+            patches = [item[0] for item in batch]
+            # 拼接為 [N, C, H, W]
+            return torch.cat(patches, dim=0).half()
+
+        loader = DataLoader(
+            wsi_bag,
+            batch_size=self.patch_batch_size,
+            num_workers=self.num_workers,
+            pin_memory=True,
+            collate_fn=collate_fn
+        )
+        all_features = []
+        # 可選：使用 AMP 進行自動混合精度
+        with torch.no_grad(), autocast():
+            for imgs in loader:
+                # 若 imgs 多出一個維度則 squeeze（根據數據格式調整）
+                if imgs.dim() == 5 and imgs.size(1) == 1:
+                    imgs = imgs.squeeze(1)
+                imgs = imgs.to(next(self.feature_extractor.parameters()).device)
+                # 使用 foundation model 提取特徵（使用 forward_no_head 得到中間特徵）
+                feats = self.feature_extractor.forward_no_head(imgs, normalize=False)
+                all_features.append(feats)
+        if len(all_features) > 0:
+            features = torch.cat(all_features, dim=0)
+        else:
+            features = torch.empty(0, device=imgs.device)
+        # 將提取的特徵送入 survival model 得到預測結果
+        out = self.survival_model(features)
+        return out
