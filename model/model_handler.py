@@ -256,17 +256,18 @@ class MyHandler(object):
                 checkpoint_path=cfg["ckpt_path"],
                 force_image_size=cfg["target_patch_size"]
             )
+
             peft_config = LoraConfig(
-                task_type=TaskType.FEATURE_EXTRACTION,  # 若有針對 CV 任務的 task_type，也可以試試 TaskType.CV_FEATURE_EXTRACTION
+                task_type=TaskType.FEATURE_EXTRACTION, 
                 r=8,
                 lora_alpha=32,
                 lora_dropout=0.1,
-                target_modules=["query", "key", "value"],
+                target_modules=["qkv"],
                 bias="none",
                 inference_mode=False
             )
             foundation_model = get_peft_model(foundation_model, peft_config)
-            # 3. 載入 Survival Model（例如 CLAM_Survival）
+
             survival_model = CLAM_Survival(dims=dims)
             self.model = FineTuningModel(foundation_model, survival_model)
             self.model = self.model.to(self.device)
@@ -362,13 +363,13 @@ class MyHandler(object):
                 
                 train_loader = DataLoader(
                     train_set, batch_size=self.cfg['batch_size'],sampler=train_sampler,
-                    num_workers=self.cfg['num_workers'], pin_memory=True, worker_init_fn=seed_worker)
+                    num_workers=self.cfg['num_workers'], pin_memory=True, collate_fn=wsi_collate_fn, worker_init_fn=seed_worker)
                 val_loader = DataLoader(
                     val_set, batch_size=self.cfg['batch_size'], 
-                    num_workers=self.cfg['num_workers'], pin_memory=True, worker_init_fn=seed_worker)
+                    num_workers=self.cfg['num_workers'], pin_memory=True, collate_fn=wsi_collate_fn, worker_init_fn=seed_worker)
                 test_loader = DataLoader(
                     test_set, batch_size=self.cfg['batch_size'], 
-                    num_workers=self.cfg['num_workers'], pin_memory=True, worker_init_fn=seed_worker)
+                    num_workers=self.cfg['num_workers'], pin_memory=True, collate_fn=wsi_collate_fn, worker_init_fn=seed_worker)
                  # Train
                 val_name = 'validation'
                 val_loaders = {'validation': val_loader, 'test': test_loader}
