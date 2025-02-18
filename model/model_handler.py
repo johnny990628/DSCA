@@ -27,6 +27,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 from datasets.dataset_h5 import Whole_Slide_Bag_FP
 import time
+import datetime
 from peft import LoraConfig, get_peft_model, TaskType
 
 
@@ -196,7 +197,8 @@ class MyHandler(object):
             backend='nccl',
             init_method='env://',
             world_size=self.world_size,
-            rank=self.rank
+            rank=self.rank,
+            timeout=datetime.timedelta(seconds=7200)
         )
         # set up for path
         self.writer = SummaryWriter(cfg['save_path'])
@@ -271,7 +273,7 @@ class MyHandler(object):
             survival_model = CLAM_Survival(dims=dims)
             self.model = FineTuningModel(foundation_model, survival_model)
             self.model = self.model.to(self.device)
-            self.model = DDP(self.model, device_ids=[self.rank], output_device=self.rank)
+            self.model = DDP(self.model, device_ids=[self.rank], output_device=self.rank, find_unused_parameters=True)
             self.load_checkpoint(self.best_ckpt_path)  # 載入最好的 survival model
             print(f"Load Survival Model Successfully!")
         else:
@@ -442,9 +444,6 @@ class MyHandler(object):
             else:
                 train_cltor, batch_avg_loss = self._train_each_epoch(train_loader)
             
-            if self.rank != 0:
-                continue
-            
             self.writer.add_scalar('loss/train_batch_avg_loss', batch_avg_loss, epoch+1)
             
             if measure:
@@ -556,8 +555,7 @@ class MyHandler(object):
         i_batch = 0
 
         for i, batch in enumerate(train_loader):
-            
-            print(f"===Process {i+1}/{len(train_loader)} WSI===")
+            print(f"===[Train Process] {i+1}/{len(train_loader)} WSI===")
             i_batch += 1
             wsi_dataset, y = batch[0]
             y = y.unsqueeze(0).to(self.device)
@@ -630,6 +628,7 @@ class MyHandler(object):
         res = {'y': None, 'y_hat': None}
         with torch.no_grad():
             for i, batch in enumerate(loader):
+                print(f"===[Validation Process] {i+1}/{len(loader)} WSI===")
                 wsi_dataset, y = batch[0]
                 y = y.unsqueeze(0).to(self.device)
                 y_hat = model(wsi_dataset)
