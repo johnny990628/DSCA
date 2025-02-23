@@ -6,7 +6,6 @@ import numpy as np
 from torch.optim import lr_scheduler
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
-from utils.parallel import DataParallelModel, DataParallelCriterion
 
 from torch.nn.parallel.scatter_gather import scatter
 from .conch import create_model_from_pretrained
@@ -28,7 +27,7 @@ from torch.utils.data.distributed import DistributedSampler
 from datasets.dataset_h5 import Whole_Slide_Bag_FP
 import time
 import datetime
-from peft import LoraConfig, get_peft_model, TaskType
+from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 
 
 class SurvLabelTransformer(object):
@@ -259,23 +258,31 @@ class MyHandler(object):
                 force_image_size=cfg["target_patch_size"]
             )
 
-            peft_config = LoraConfig(
-                task_type=TaskType.FEATURE_EXTRACTION, 
-                r=8,
-                lora_alpha=32,
-                lora_dropout=0.1,
-                target_modules=["qkv"],
-                bias="none",
-                inference_mode=False
-            )
-            foundation_model = get_peft_model(foundation_model, peft_config)
+            if cfg['lora_checkpoint']:
+                foundation_model = PeftModel.from_pretrained(
+                    foundation_model,
+                    cfg['lora_checkpoint']
+                )
+                print(f"[Checkpoint] Load LoRA Weights from Checkpoint {cfg['lora_checkpoint']}")
+            else:
+                peft_config = LoraConfig(
+                    task_type=TaskType.FEATURE_EXTRACTION, 
+                    r=8,
+                    lora_alpha=32,
+                    lora_dropout=0.1,
+                    target_modules=["qkv"],
+                    bias="none",
+                    inference_mode=False
+                )
+                foundation_model = get_peft_model(foundation_model, peft_config)
+                print(f"[Checkpoint] Not Found LoRA Weights from Checkpoint, Train the Model using Default Setting")
 
             survival_model = CLAM_Survival(dims=dims)
             self.model = FineTuningModel(foundation_model, survival_model)
             self.model = self.model.to(self.device)
             self.model = DDP(self.model, device_ids=[self.rank], output_device=self.rank, find_unused_parameters=True)
-            self.load_checkpoint(self.best_ckpt_path)  # 載入最好的 survival model
-            print(f"Load Survival Model Successfully!")
+            self.load_checkpoint(self.best_ckpt_path)
+            print(f"[Setup] Load All Model Successfully!")
         else:
             raise ValueError(f"Expected HierSurv/GenericSurv, but got {cfg['task']}")
        
@@ -372,21 +379,20 @@ class MyHandler(object):
                 test_loader = DataLoader(
                     test_set, batch_size=self.cfg['batch_size'], 
                     num_workers=self.cfg['num_workers'], pin_memory=True, collate_fn=wsi_collate_fn, worker_init_fn=seed_worker)
-                 # Train
                 val_name = 'validation'
                 val_loaders = {'validation': val_loader, 'test': test_loader}
                 self._run_training(train_loader, train_sampler=train_sampler, val_loaders=val_loaders, val_name=val_name, measure=True, save=False)
 
             else:
                 train_loader = DataLoader(train_set, batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
-                    num_workers=self.cfg['num_workers'], shuffle=True,  worker_init_fn=seed_worker)
+                    num_workers=self.cfg['num_workers'], shuffle=True)
                 val_loader   = DataLoader(val_set,   batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
-                    num_workers=self.cfg['num_workers'], shuffle=False, worker_init_fn=seed_worker)
+                    num_workers=self.cfg['num_workers'], shuffle=False)
                 if pids_test is not None:
                     test_set    = prepare_dataset(pids_test, self.cfg, self.cfg['magnification'])
                     test_pids   = test_set.pids
                     test_loader = DataLoader(test_set,  batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
-                        num_workers=self.cfg['num_workers'], shuffle=False, worker_init_fn=seed_worker)
+                        num_workers=self.cfg['num_workers'], shuffle=False)
                 else:
                     test_set = None 
                     test_pids = None

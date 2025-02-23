@@ -7,9 +7,11 @@ path_data_split: ./data_split/tcga_luad_merged/tcga_luad_merged-seed42-fold{}.np
 
 # fine tuning
 csv_path: /work/u6658716/TCGA-LUAD/DSCA/data_split/tcga_luad_merged/tcga_luad_merged_path_full.csv
-h5_dir: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-5x-s224
+h5_dir: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-10x-s224
 slide_dir: /work/u6658716/TCGA-LUAD/DATASETS/TCGA/LUAD
 ckpt_path: /work/u6658716/TCGA-LUAD/CLAM/checkpoints/conch/pytorch_model.bin
+# lora_checkpoint: ./results-luad-hier/ple_conch_finetuning_5x_224/lora_checkpoint_epoch_3
+lora_checkpoint:
 target_patch_size: 224
 
 # data
@@ -41,7 +43,7 @@ top_k: 500
 early_fusion: coattn
 
 # output
-save_path: ./results-luad-hier/ple_conch_finetuning_5x_224 # ss
+save_path: ./results-luad-hier/ple_conch_finetuning_10x_224 # ss
 save_prediction: True
 
 # Patch Embedding
