@@ -1,4 +1,4 @@
-task: fine_tuning_clam # use low and high resolutions (dual stream)
+task: mcat # use low and high resolutions (dual stream)
 experiment: sim # default sim
 
 # spliting
@@ -17,9 +17,9 @@ target_patch_size: 224
 # data
 dataset_name: tcga_luad_merged
 magnification: 10-40 # default setting, using low and high resolutions
-path_patchx20: /work/u6658716/TCGA-LUAD/PATCHES/tiles-20x-s224/feats-CONCH-s224/pt_files # for cellular model: wsi
-path_patchx5: /work/u6658716/TCGA-LUAD/PATCHES/tiles-20x-s224/cellular-HOVERNET-s224/pt_files # for cellular model: cell
-path_coordx5: /work/u6658716/TCGA-LUAD/PATCHES/tiles-20x-s224/patches
+path_patchx20: /data1/johnny99457/PATCHES/LUAD/tiles-5x-s224/feats-CONCH-s224/pt_files # for cellular model: wsi
+path_patchx5: /data1/johnny99457/PATCHES/LUAD/tiles-5x-s224/cellular-HOVERNET-s224/pt_files # for cellular model: cell
+path_coordx5: /data1/johnny99457/PATCHES/LUAD/tiles-5x-s224/patches
 path_label: ./data_split/tcga_luad_merged/tcga_luad_merged_path_full.csv
 label_discrete: False # default setting
 bins_discrete: 4 # default setting, bins to divide survival times
@@ -34,8 +34,8 @@ cuda_id: 0 # use which gpu
 seed: 42
 
 # input dim
-dims: 512-256-256 # for clam
-# dims: 512-256-128-64-32 # for fusion
+# dims: 512-256-256 # for clam
+dims: 512-256-128-64-32 # for fusion
 cell_in_dim: 1024
 top_k: 500
 
@@ -43,7 +43,7 @@ top_k: 500
 early_fusion: coattn
 
 # output
-save_path: ./results-luad-hier/ple_conch_finetuning_10x_224 # ss
+save_path: ./results-luad-hier/ple_conch_ef_5x_224 # ss
 save_prediction: True
 
 # Patch Embedding

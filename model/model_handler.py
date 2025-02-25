@@ -346,10 +346,10 @@ class MyHandler(object):
             train_pids = train_set.pids
             val_set    = prepare_dataset(pids_val, self.cfg, self.cfg['magnification'])
             val_pids   = val_set.pids
+            test_set    = prepare_dataset(pids_test, self.cfg, self.cfg['magnification'])
+            test_pids   = test_set.pids
 
             if task == 'fine_tuning_clam':
-                test_set    = prepare_dataset(pids_test, self.cfg, self.cfg['magnification'])
-                test_pids   = test_set.pids
                 self.surv_label = SurvLabelTransformer(self.cfg["csv_path"])
                 self.full_data = self.surv_label.full_data
 
@@ -384,24 +384,18 @@ class MyHandler(object):
                 self._run_training(train_loader, train_sampler=train_sampler, val_loaders=val_loaders, val_name=val_name, measure=True, save=False)
 
             else:
-                train_loader = DataLoader(train_set, batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
+                train_sampler = DistributedSampler(train_set, num_replicas=self.world_size, rank=self.rank, shuffle=True)
+                
+                train_loader = DataLoader(train_set, batch_size=self.cfg['batch_size'],sampler=train_sampler, generator=seed_generator(self.cfg['seed']),
                     num_workers=self.cfg['num_workers'], shuffle=True)
                 val_loader   = DataLoader(val_set,   batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
                     num_workers=self.cfg['num_workers'], shuffle=False)
-                if pids_test is not None:
-                    test_set    = prepare_dataset(pids_test, self.cfg, self.cfg['magnification'])
-                    test_pids   = test_set.pids
-                    test_loader = DataLoader(test_set,  batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
-                        num_workers=self.cfg['num_workers'], shuffle=False)
-                else:
-                    test_set = None 
-                    test_pids = None
-                    test_loader = None
-            
+                test_loader = DataLoader(test_set,  batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
+                    num_workers=self.cfg['num_workers'], shuffle=False)
                 # Train
                 val_name = 'validation'
                 val_loaders = {'validation': val_loader, 'test': test_loader}
-                self._run_training(train_loader, val_loaders=val_loaders, val_name=val_name, measure=True, save=False)
+                self._run_training(train_loader, train_sampler=train_sampler, val_loaders=val_loaders, val_name=val_name, measure=True, save=False)
 
             # Evals
             metrics = dict()
