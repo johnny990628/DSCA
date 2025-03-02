@@ -249,6 +249,8 @@ class MyHandler(object):
             self.model = CLAM_Survival(dims=dims)
         elif cfg['task'] == 'mcat':
             self.model = MCAT_Surv(dims=dims, cell_in_dim=int(cfg['cell_in_dim']), top_k=int(cfg['top_k']), fusion=str(cfg['early_fusion']))
+            self.model = self.model.to(self.device)
+            self.model = DDP(self.model, device_ids=[self.rank], output_device=self.rank, find_unused_parameters=True)
             print(f"[Setup] Early Fusion Approch: {str(cfg['early_fusion'])}")
         elif cfg['task'] == 'fine_tuning_clam':
              # ✅ 加載 Foundation Model
@@ -296,9 +298,6 @@ class MyHandler(object):
         cfg_optimizer = SimpleNamespace(opt=cfg['opt'], weight_decay=cfg['weight_decay'], lr=cfg['lr'], 
             opt_eps=cfg['opt_eps'], opt_betas=cfg['opt_betas'], momentum=cfg['opt_momentum'])
         self.optimizer = create_optimizer(cfg_optimizer, self.model)
-
-        if cfg['task'] != 'fine_tuning_clam':
-            self.model = self.model.cuda()
        
         # 1. Early stopping: patience = 30
         # 2. LR scheduler: lr * 0.5 if val_loss is not decreased in 10 epochs.
@@ -386,36 +385,38 @@ class MyHandler(object):
             else:
                 train_sampler = DistributedSampler(train_set, num_replicas=self.world_size, rank=self.rank, shuffle=True)
                 
-                train_loader = DataLoader(train_set, batch_size=self.cfg['batch_size'],sampler=train_sampler, generator=seed_generator(self.cfg['seed']),
-                    num_workers=self.cfg['num_workers'], shuffle=True)
+                train_loader = DataLoader(train_set, batch_size=self.cfg['batch_size'], sampler=train_sampler, generator=seed_generator(self.cfg['seed']),
+                    pin_memory=True, num_workers=self.cfg['num_workers'])
                 val_loader   = DataLoader(val_set,   batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
-                    num_workers=self.cfg['num_workers'], shuffle=False)
+                    pin_memory=True, num_workers=self.cfg['num_workers'])
                 test_loader = DataLoader(test_set,  batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
-                    num_workers=self.cfg['num_workers'], shuffle=False)
-                # Train
+                    pin_memory=True, num_workers=self.cfg['num_workers'])
                 val_name = 'validation'
                 val_loaders = {'validation': val_loader, 'test': test_loader}
                 self._run_training(train_loader, train_sampler=train_sampler, val_loaders=val_loaders, val_name=val_name, measure=True, save=False)
 
             # Evals
-            metrics = dict()
-            evals_loader = {'train': train_loader, 'validation': val_loader, 'test': test_loader}
-            for k, loader in evals_loader.items():
-                if loader is None:
-                    continue
-                cur_pids = [train_pids, val_pids, test_pids][['train', 'validation', 'test'].index(k)]
-                # cltor is on cpu
-                cltor = self.test_model(self.model, loader, self.cfg['task'], checkpoint=self.best_ckpt_path, model_pe=self.model_pe)
-                ci, loss = evaluator(cltor['y'], cltor['y_hat'], metrics='cindex'), self.loss(cltor['y'], cltor['y_hat'])
-                metrics[k] = [('cindex', ci), ('loss', loss)]
+            if self.rank == 0:
+                metrics = dict()
+                # evals_loader = {'train': train_loader, 'validation': val_loader, 'test': test_loader}
+                evals_loader = {'test': test_loader}
+                for k, loader in evals_loader.items():
+                    if loader is None:
+                        continue
+                    # cur_pids = [train_pids, val_pids, test_pids][['train', 'validation', 'test'].index(k)]
+                    cur_pids = test_pids
+                    # cltor is on cpu
+                    cltor = self.test_model(self.model, loader, self.cfg['task'], checkpoint=self.best_ckpt_path, model_pe=self.model_pe)
+                    ci, loss = evaluator(cltor['y'], cltor['y_hat'], metrics='cindex'), self.loss(cltor['y'], cltor['y_hat'])
+                    metrics[k] = [('cindex', ci), ('loss', loss)]
 
-                if self.cfg['save_prediction']:
-                    path_save_pred = osp.join(self.cfg['save_path'], 'surv_pred_{}.csv'.format(k))
-                    save_prediction(cur_pids, cltor['y'], cltor['y_hat'], path_save_pred)
-
-        print_metrics(metrics, print_to_path=self.metrics_path)
-
-        return metrics
+                    if self.cfg['save_prediction']:
+                        path_save_pred = osp.join(self.cfg['save_path'], 'surv_pred_{}.csv'.format(k))
+                        save_prediction(cur_pids, cltor['y'], cltor['y_hat'], path_save_pred)
+                print_metrics(metrics, print_to_path=self.metrics_path)
+                return metrics
+            else:
+                return None
 
     def _run_training(self, train_loader, train_sampler=None, val_loaders=None, val_name=None, measure=True, save=True, **kws):
         """Traing model.
@@ -438,8 +439,8 @@ class MyHandler(object):
         last_epoch = -1
         for epoch in range(epochs):
             last_epoch = epoch
+            train_sampler.set_epoch(epoch)
             if self.cfg['task'] == 'fine_tuning_clam':
-                train_sampler.set_epoch(epoch)
                 train_cltor, batch_avg_loss = self._train_finetune_epoch(train_loader)
             else:
                 train_cltor, batch_avg_loss = self._train_each_epoch(train_loader)
@@ -473,14 +474,14 @@ class MyHandler(object):
                         # monitor ci 
                         val_metrics = met_ci if self.cfg['monitor_metrics'] == 'ci' else met_loss
             
-            if val_metrics is not None and self.early_stop is not None:
+            if val_metrics is not None and self.early_stop is not None and self.rank==0:
                 self.early_stop(epoch, val_metrics, self.model, ckpt_name=self.best_ckpt_path)
                 self.steplr.step(val_metrics)
                 if self.early_stop.if_stop():
                     last_epoch = epoch + 1
                     break
 
-            if self.rank == 0:
+            if self.rank == 0 and self.cfg['task']=='fine_tuning_clam':
                 self._save_lora_checkpoint(epoch+1)
             
             self.writer.flush()
@@ -503,17 +504,11 @@ class MyHandler(object):
             i_batch += 1
 
             fx = fx.cuda()
-            fx5 = fx5.cuda()
-            cx5 = cx5.cuda() if self.model_pe else None
+            fx5 = fx5.cuda() if self.cfg['task']=='mcat' else None
+            # cx5 = cx5.cuda() if self.model_pe else None
             y = y.cuda()
             
-            if self.cfg['task'] == 'HierSurv':
-                y_hat = self.model(fx, fx5, cx5)
-            elif self.cfg['task'] == 'GenericCAPSurv':
-                y_hat = self.model(fx, fx5, cx5)
-            elif self.cfg['task'] == 'GenericSurv':
-                y_hat = self.model(fx, cx5)
-            elif self.cfg['task'] == 'clam':
+            if self.cfg['task'] == 'clam':
                 y_hat = self.model(fx)
             elif self.cfg['task'] == 'mcat':
                 y_hat = self.model(fx,fx5)
@@ -521,7 +516,6 @@ class MyHandler(object):
             collector = collect_tensor(collector, y.detach().cpu(), y_hat.detach().cpu())
             bp_collector = collect_tensor(bp_collector, y, y_hat)
 
-            torch.cuda.empty_cache()
             if bp_collector['y'].size(0) % bp_every_iters == 0 or bp_collector['y'].size(0)==len(train_loader):
                 # 2. backward propagation
                 if self.cfg['loss'] == 'survple' and torch.sum(bp_collector['y'] > 0).item() <= 0:
@@ -540,10 +534,10 @@ class MyHandler(object):
                 # 2.3 backwards gradients and update networks
                 loss.backward()
                 self.optimizer.step()
-                
                 bp_collector = {'y': None, 'y_hat': None}
 
         return collector, sum(all_loss)/len(all_loss)
+
 
     def _train_finetune_epoch(self, train_loader):
         bp_every_iters = self.cfg['bp_every_iters']
@@ -604,15 +598,10 @@ class MyHandler(object):
             for x1, x2, c, y in loader:
                 x1 = x1.cuda()
                 x2 = x2.cuda()
-                c = c.cuda() if model_pe else None
+                # c = c.cuda() if model_pe else None
                 y = y.cuda()
-                if task == 'HierSurv':
-                    y_hat = model(x1, x2, c)
-                elif task == 'GenericCAPSurv':
-                    y_hat = model(x1, x2, c)
-                elif task == 'GenericSurv':
-                    y_hat = model(x1, c)
-                elif task == 'clam' or task == 'fine_tuning_clam':
+                
+                if task == 'clam' or task == 'fine_tuning_clam':
                     y_hat = model(x1)
                 elif task == 'mcat':
                     y_hat = model(x1, x2)

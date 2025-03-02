@@ -9,6 +9,11 @@ from .mcat_coattn import *
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast
 
+# import deepspeed
+# from deepspeed.module_inject import DeepSpeedTransformerLayer
+# import torch.distributed as dist
+
+
 ###########################################################
 #  A generic network for WSI with **single magnitude**.
 #  A typical case of WSI:
@@ -480,32 +485,43 @@ class MCAT_Surv(nn.Module):
         super(MCAT_Surv, self).__init__()
         self.fusion = fusion
         self.top_k = top_k
+        # self.world_size = dist.get_world_size()
+        # self.rank = dist.get_rank()
+
         ### FC Layer over WSI bag
-        # wsi_fc = [
-        #     nn.Linear(dims[0], dims[1]), 
-        #     nn.ReLU(),
-        #     nn.Dropout(0.25),
-        #     nn.Linear(dims[1], dims[2]), 
-        #     nn.ReLU(),
-        #     nn.Dropout(0.25),
-        #     nn.Linear(dims[2], dims[3]), 
-        # ]
-        # self.wsi_net = nn.Sequential(*wsi_fc)
+        wsi_fc = [
+            nn.Linear(dims[0], dims[1]), 
+            nn.ReLU(),
+            nn.Dropout(0.25),
+            nn.Linear(dims[1], dims[2]), 
+            nn.ReLU(),
+            nn.Dropout(0.25),
+        ]
+        self.wsi_net = nn.Sequential(*wsi_fc)
         
         ### Constructing Genomic SNN
         cell_fc = [
             nn.Linear(cell_in_dim, dims[0]), 
             nn.ReLU(),
             nn.Dropout(0.25),
+            # nn.Linear(dims[0], dims[1]),
+            # nn.ReLU(),
+            # nn.Dropout(0.25),
             # nn.Linear(dims[1], dims[2]),
             # nn.ReLU(),
             # nn.Dropout(0.25),
-            # nn.Linear(dims[2], dims[3]), 
         ]
         self.cell_net = nn.Sequential(*cell_fc)
 
         ### Multihead Attention
         self.coattn = MultiheadAttention(embed_dim=dims[0], num_heads=1)
+        ### Tensor Parallel Multihead Attention
+        # self.coattn = DeepSpeedTransformerLayer(
+        #     hidden_size=dims[2],
+        #     num_attention_heads=1,
+        #     mp_size=self.world_size,  # Tensor Parallel GPU 數量
+        #     attn_type="cross"
+        # )
 
         self.gated_attention = Attn_Net_Gated(
             L=dims[0]*2 if fusion=='concat' else dims[0],  # Hidden feature dimension
@@ -516,10 +532,10 @@ class MCAT_Surv(nn.Module):
         
         # Classifier
         classifier_layers = [
-            nn.Linear(dims[0]*2, dims[0]) if fusion=='concat' else nn.Linear(dims[0], dims[1]), 
+            nn.Linear(dims[0]*2, dims[1]) if fusion=='concat' else nn.Linear(dims[0], dims[1]), 
             nn.ReLU(),
             nn.Dropout(0.25),
-            nn.Linear(dims[0], 1) if fusion=='concat' else nn.Linear(dims[1], 1)
+            nn.Linear(dims[1], 1) if fusion=='concat' else nn.Linear(dims[1], 1)
         ]
         self.classifier = nn.Sequential(*classifier_layers)
     
@@ -548,7 +564,20 @@ class MCAT_Surv(nn.Module):
             # h_cell_topk = h_cell[topk_indices]
 
             # Co-Attention (Q: cellular features, K/V: pathology features)
-            h_path_coattn, A_coattn = self.coattn(h_cell_bag, h_path_bag, h_path_bag) # Q, K, V
+            batch_size = h_path_bag.shape[0]  # 獲取 batch_size
+            cross_attn_outputs = []
+            
+            for i in range(batch_size):
+                query = h_cell_bag[i:i+1]  
+                key = h_path_bag[i:i+1]    
+                value = h_path_bag[i:i+1] 
+
+                h_path_coattn, _ = self.coattn(query, key, value) 
+                cross_attn_outputs.append(h_path_coattn)
+            
+            h_path_coattn = torch.cat(cross_attn_outputs, dim=0)  # 合併回 batch 維度
+
+            # h_path_coattn, A_coattn = self.coattn(h_cell_bag, h_path_bag, h_path_bag) # Q, K, V
         
 
         # Gated Attention
