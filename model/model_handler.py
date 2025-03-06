@@ -28,6 +28,8 @@ from datasets.dataset_h5 import Whole_Slide_Bag_FP
 import time
 import datetime
 from peft import LoraConfig, get_peft_model, TaskType, PeftModel
+import deepspeed
+import json
 
 
 class SurvLabelTransformer(object):
@@ -191,14 +193,14 @@ class MyHandler(object):
         self.rank = int(os.environ['RANK'])
         self.world_size = int(os.environ['WORLD_SIZE'])
         self.device = torch.device(f'cuda:{self.rank}')
-        # 初始化进程组
-        dist.init_process_group(
-            backend='nccl',
-            init_method='env://',
-            world_size=self.world_size,
-            rank=self.rank,
-            timeout=datetime.timedelta(seconds=7200)
-        )
+        # # 初始化进程组
+        # dist.init_process_group(
+        #     backend='nccl',
+        #     init_method='env://',
+        #     world_size=self.world_size,
+        #     rank=self.rank,
+        #     timeout=datetime.timedelta(seconds=7200)
+        # )
         # set up for path
         self.writer = SummaryWriter(cfg['save_path'])
         self.last_ckpt_path = osp.join(cfg['save_path'], 'model-last.pth')
@@ -250,7 +252,18 @@ class MyHandler(object):
         elif cfg['task'] == 'mcat':
             self.model = MCAT_Surv(dims=dims, cell_in_dim=int(cfg['cell_in_dim']), top_k=int(cfg['top_k']), fusion=str(cfg['early_fusion']))
             self.model = self.model.to(self.device)
-            self.model = DDP(self.model, device_ids=[self.rank], output_device=self.rank, find_unused_parameters=True)
+            # DeepSpeed 設定
+            ds_config_path = "./config/ds_config.json"
+            with open(ds_config_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)  # 讀取 JSON 檔案
+                print(data)
+            # DeepSpeed 初始化
+            self.model, self.optimizer, _, _ = deepspeed.initialize(
+                model=self.model,
+                model_parameters=self.model.parameters(),
+                config_params=ds_config_path
+            )
+            # self.model = DDP(self.model, device_ids=[self.rank], output_device=self.rank, find_unused_parameters=True)
             print(f"[Setup] Early Fusion Approch: {str(cfg['early_fusion'])}")
         elif cfg['task'] == 'fine_tuning_clam':
              # ✅ 加載 Foundation Model
@@ -294,6 +307,7 @@ class MyHandler(object):
         
         # set up for loss, optimizer, and lr scheduler
         self.loss = create_survloss(cfg['loss'], argv={'alpha': cfg['alpha']})
+        self.loss = self.loss.to(self.device)
         self.loss_l1 = loss_reg_l1(cfg['reg_l1'])
         cfg_optimizer = SimpleNamespace(opt=cfg['opt'], weight_decay=cfg['weight_decay'], lr=cfg['lr'], 
             opt_eps=cfg['opt_eps'], opt_betas=cfg['opt_betas'], momentum=cfg['opt_momentum'])
@@ -385,16 +399,17 @@ class MyHandler(object):
             else:
                 train_sampler = DistributedSampler(train_set, num_replicas=self.world_size, rank=self.rank, shuffle=True)
                 
-                train_loader = DataLoader(train_set, batch_size=self.cfg['batch_size'], sampler=train_sampler, generator=seed_generator(self.cfg['seed']),
+                train_loader = DataLoader(train_set, batch_size=self.model.train_micro_batch_size_per_gpu(), sampler=train_sampler, generator=seed_generator(self.cfg['seed']),
                     pin_memory=True, num_workers=self.cfg['num_workers'])
-                val_loader   = DataLoader(val_set,   batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
+                val_loader   = DataLoader(val_set,   batch_size=self.model.train_micro_batch_size_per_gpu(), generator=seed_generator(self.cfg['seed']),
                     pin_memory=True, num_workers=self.cfg['num_workers'])
-                test_loader = DataLoader(test_set,  batch_size=self.cfg['batch_size'], generator=seed_generator(self.cfg['seed']),
+                test_loader = DataLoader(test_set,  batch_size=self.model.train_micro_batch_size_per_gpu(), generator=seed_generator(self.cfg['seed']),
                     pin_memory=True, num_workers=self.cfg['num_workers'])
                 val_name = 'validation'
                 val_loaders = {'validation': val_loader, 'test': test_loader}
                 self._run_training(train_loader, train_sampler=train_sampler, val_loaders=val_loaders, val_name=val_name, measure=True, save=False)
 
+            dist.barrier()
             # Evals
             if self.rank == 0:
                 metrics = dict()
@@ -414,9 +429,16 @@ class MyHandler(object):
                         path_save_pred = osp.join(self.cfg['save_path'], 'surv_pred_{}.csv'.format(k))
                         save_prediction(cur_pids, cltor['y'], cltor['y_hat'], path_save_pred)
                 print_metrics(metrics, print_to_path=self.metrics_path)
-                return metrics
-            else:
-                return None
+
+            dist.barrier()
+            if hasattr(self.model, 'destroy'):
+                self.model.destroy()  # 釋放DeepSpeed資源
+            # 或者
+            if hasattr(self.model, 'module'):
+                if hasattr(self.model.module, 'destroy'):
+                    self.model.module.destroy()
+            return metrics if self.rank==0 else None
+            
 
     def _run_training(self, train_loader, train_sampler=None, val_loaders=None, val_name=None, measure=True, save=True, **kws):
         """Traing model.
@@ -474,10 +496,15 @@ class MyHandler(object):
                         # monitor ci 
                         val_metrics = met_ci if self.cfg['monitor_metrics'] == 'ci' else met_loss
             
-            if val_metrics is not None and self.early_stop is not None and self.rank==0:
+            if val_metrics is not None and self.early_stop is not None:
                 self.early_stop(epoch, val_metrics, self.model, ckpt_name=self.best_ckpt_path)
                 self.steplr.step(val_metrics)
-                if self.early_stop.if_stop():
+                should_stop = self.early_stop.if_stop()
+                # 使用all_reduce確保所有進程都收到停止信號
+                stop_tensor = torch.tensor([1 if should_stop else 0], device=self.device)
+                dist.all_reduce(stop_tensor, op=dist.ReduceOp.MAX)
+                if stop_tensor.item() > 0:
+                    print(f"[Rank {self.rank}] Early stopping triggered at epoch {epoch+1}")
                     last_epoch = epoch + 1
                     break
 
@@ -503,10 +530,10 @@ class MyHandler(object):
         for fx, fx5, cx5, y in train_loader:
             i_batch += 1
 
-            fx = fx.cuda()
-            fx5 = fx5.cuda() if self.cfg['task']=='mcat' else None
-            # cx5 = cx5.cuda() if self.model_pe else None
-            y = y.cuda()
+            fx = fx.to(self.device)
+            fx5 = fx5.to(self.device) if self.cfg['task']=='mcat' else None
+            # cx5 = cx5.to(self.device) if self.model_pe else None
+            y = y.to(self.device)
             
             if self.cfg['task'] == 'clam':
                 y_hat = self.model(fx)
@@ -524,7 +551,8 @@ class MyHandler(object):
                     continue
                 
                 # 2.1 zero gradients buffer
-                self.optimizer.zero_grad()
+                # self.optimizer.zero_grad()
+                self.model.zero_grad()
                 # 2.2 calculate loss
                 loss = self.loss(bp_collector['y'], bp_collector['y_hat'])
                 # loss += self.loss_l1(self.model.parameters())
@@ -532,8 +560,10 @@ class MyHandler(object):
                 print("[training epoch] training batch {}, loss: {:.6f}".format(i_batch, loss.item()))
 
                 # 2.3 backwards gradients and update networks
-                loss.backward()
-                self.optimizer.step()
+                # loss.backward()
+                # self.optimizer.step()
+                self.model.backward(loss)
+                self.model.step()
                 bp_collector = {'y': None, 'y_hat': None}
 
         return collector, sum(all_loss)/len(all_loss)
@@ -589,6 +619,7 @@ class MyHandler(object):
 
     @staticmethod
     def test_model(model, loader, task, checkpoint=None, model_pe=False):
+        device = next(model.parameters()).device
         if checkpoint is not None:
             model.load_state_dict(torch.load(checkpoint))
 
@@ -596,10 +627,10 @@ class MyHandler(object):
         res = {'y': None, 'y_hat': None}
         with torch.no_grad():
             for x1, x2, c, y in loader:
-                x1 = x1.cuda()
-                x2 = x2.cuda()
-                # c = c.cuda() if model_pe else None
-                y = y.cuda()
+                x1 = x1.to(device)
+                x2 = x2.to(device)
+                # c = c.to(device) if model_pe else None
+                y = y.to(device)
                 
                 if task == 'clam' or task == 'fine_tuning_clam':
                     y_hat = model(x1)

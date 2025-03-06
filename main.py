@@ -15,6 +15,7 @@ import os
 import torch
 import torch.distributed as dist
 import datetime
+import deepspeed
 
 
 def main(config):
@@ -48,6 +49,11 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', '-f', required=True, type=str, help='path to the config file')
     parser.add_argument('--multi_run', action='store_true', help='flag: multi run')
+
+    parser.add_argument('--local_rank', type=int, default=-1, help='local rank for distributed training')
+     # DeepSpeed 相關參數
+    parser = deepspeed.add_config_arguments(parser)
+    
     args = vars(parser.parse_args())
     return args
 
@@ -97,9 +103,25 @@ def grid(kwargs):
 
 
 if __name__ == '__main__':
+    # cfg = get_args()
+    # config = get_config(cfg['config'])
     cfg = get_args()
     config = get_config(cfg['config'])
     print_config(config)
+
+    # 將命令行參數添加到配置中
+    config['local_rank'] = cfg['local_rank']
+    
+    # 如果是分散式訓練，初始化環境
+    if cfg['local_rank'] != -1:
+        torch.cuda.set_device(cfg['local_rank'])
+        deepspeed.init_distributed()
+        config['world_size'] = dist.get_world_size()
+        config['rank'] = dist.get_rank()
+    else:
+        # 非分散式訓練
+        config['world_size'] = 1
+        config['rank'] = 0
 
     if cfg['multi_run']:
         multi_run_main(config)

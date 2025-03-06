@@ -9,9 +9,7 @@ from .mcat_coattn import *
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast
 
-# import deepspeed
-# from deepspeed.module_inject import DeepSpeedTransformerLayer
-# import torch.distributed as dist
+import torch.distributed as dist
 
 
 ###########################################################
@@ -485,8 +483,8 @@ class MCAT_Surv(nn.Module):
         super(MCAT_Surv, self).__init__()
         self.fusion = fusion
         self.top_k = top_k
-        # self.world_size = dist.get_world_size()
-        # self.rank = dist.get_rank()
+        self.world_size = dist.get_world_size()
+        self.rank = dist.get_rank()
 
         ### FC Layer over WSI bag
         wsi_fc = [
@@ -504,17 +502,17 @@ class MCAT_Surv(nn.Module):
             nn.Linear(cell_in_dim, dims[0]), 
             nn.ReLU(),
             nn.Dropout(0.25),
-            # nn.Linear(dims[0], dims[1]),
-            # nn.ReLU(),
-            # nn.Dropout(0.25),
-            # nn.Linear(dims[1], dims[2]),
-            # nn.ReLU(),
-            # nn.Dropout(0.25),
+            nn.Linear(dims[0], dims[1]),
+            nn.ReLU(),
+            nn.Dropout(0.25),
+            nn.Linear(dims[1], dims[2]),
+            nn.ReLU(),
+            nn.Dropout(0.25),
         ]
         self.cell_net = nn.Sequential(*cell_fc)
 
         ### Multihead Attention
-        self.coattn = MultiheadAttention(embed_dim=dims[0], num_heads=1)
+        self.coattn = MultiheadAttention(embed_dim=dims[2], num_heads=1)
         ### Tensor Parallel Multihead Attention
         # self.coattn = DeepSpeedTransformerLayer(
         #     hidden_size=dims[2],
@@ -524,18 +522,18 @@ class MCAT_Surv(nn.Module):
         # )
 
         self.gated_attention = Attn_Net_Gated(
-            L=dims[0]*2 if fusion=='concat' else dims[0],  # Hidden feature dimension
-            D=dims[0]*2 if fusion=='concat' else dims[0],
+            L=dims[2]*2 if fusion=='concat' else dims[2],  # Hidden feature dimension
+            D=dims[2]*2 if fusion=='concat' else dims[2],
             dropout=dropout,
             n_classes=1  # Single output: risk score
         )
         
         # Classifier
         classifier_layers = [
-            nn.Linear(dims[0]*2, dims[1]) if fusion=='concat' else nn.Linear(dims[0], dims[1]), 
-            nn.ReLU(),
-            nn.Dropout(0.25),
-            nn.Linear(dims[1], 1) if fusion=='concat' else nn.Linear(dims[1], 1)
+            # nn.Linear(dims[0]*2, dims[1]) if fusion=='concat' else nn.Linear(dims[0], dims[1]), 
+            # nn.ReLU(),
+            # nn.Dropout(0.25),
+            nn.Linear(dims[2], 1) if fusion=='concat' else nn.Linear(dims[2], 1)
         ]
         self.classifier = nn.Sequential(*classifier_layers)
     
@@ -546,8 +544,8 @@ class MCAT_Surv(nn.Module):
         x_cell = x_cell.squeeze(0)
 
         # Bag-Level Representation
-        h_path_bag = x_path
-        # h_path_bag = self.wsi_net(x_path).unsqueeze(1) # path embeddings are fed through a FC layer
+        # h_path_bag = x_path
+        h_path_bag = self.wsi_net(x_path).unsqueeze(1) # path embeddings are fed through a FC layer
         h_cell_bag = self.cell_net(x_cell).unsqueeze(1) # each cell signature goes through it's own FC layer
         
         # Concatenate cellular and pathology features
@@ -564,20 +562,20 @@ class MCAT_Surv(nn.Module):
             # h_cell_topk = h_cell[topk_indices]
 
             # Co-Attention (Q: cellular features, K/V: pathology features)
-            batch_size = h_path_bag.shape[0]  # 獲取 batch_size
-            cross_attn_outputs = []
+            # batch_size = h_path_bag.shape[0]  # 獲取 batch_size
+            # cross_attn_outputs = []
             
-            for i in range(batch_size):
-                query = h_cell_bag[i:i+1]  
-                key = h_path_bag[i:i+1]    
-                value = h_path_bag[i:i+1] 
+            # for i in range(batch_size):
+            #     query = h_cell_bag[i:i+1]  
+            #     key = h_path_bag[i:i+1]    
+            #     value = h_path_bag[i:i+1] 
 
-                h_path_coattn, _ = self.coattn(query, key, value) 
-                cross_attn_outputs.append(h_path_coattn)
+            #     h_path_coattn, _ = self.coattn(query, key, value) 
+            #     cross_attn_outputs.append(h_path_coattn)
             
-            h_path_coattn = torch.cat(cross_attn_outputs, dim=0)  # 合併回 batch 維度
+            # h_path_coattn = torch.cat(cross_attn_outputs, dim=0)  # 合併回 batch 維度
 
-            # h_path_coattn, A_coattn = self.coattn(h_cell_bag, h_path_bag, h_path_bag) # Q, K, V
+            h_path_coattn, A_coattn = self.coattn(h_cell_bag, h_path_bag, h_path_bag) # Q, K, V
         
 
         # Gated Attention

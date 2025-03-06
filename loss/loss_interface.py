@@ -70,7 +70,10 @@ class SurvPLE(nn.Module):
 
     def forward(self, y, y_hat):
         device = y_hat.device
-
+        if y.dtype == torch.float16:
+            y = y.float()
+        if y_hat.dtype == torch.float16:
+            y_hat = y_hat.float()
         T = torch.abs(y)
         E = (y > 0).int()
 
