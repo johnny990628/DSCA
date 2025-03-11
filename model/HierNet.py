@@ -562,20 +562,20 @@ class MCAT_Surv(nn.Module):
             # h_cell_topk = h_cell[topk_indices]
 
             # Co-Attention (Q: cellular features, K/V: pathology features)
-            # batch_size = h_path_bag.shape[0]  # 獲取 batch_size
-            # cross_attn_outputs = []
+            batch_size = h_path_bag.shape[0]  # 獲取 batch_size
+            cross_attn_outputs = []
             
-            # for i in range(batch_size):
-            #     query = h_cell_bag[i:i+1]  
-            #     key = h_path_bag[i:i+1]    
-            #     value = h_path_bag[i:i+1] 
+            for i in range(batch_size):
+                query = h_cell_bag[i:i+1]  
+                key = h_path_bag[i:i+1]    
+                value = h_path_bag[i:i+1] 
 
-            #     h_path_coattn, _ = self.coattn(query, key, value) 
-            #     cross_attn_outputs.append(h_path_coattn)
+                h_path_coattn, _ = self.coattn(query, key, value) 
+                cross_attn_outputs.append(h_path_coattn)
             
-            # h_path_coattn = torch.cat(cross_attn_outputs, dim=0)  # 合併回 batch 維度
+            h_path_coattn = torch.cat(cross_attn_outputs, dim=0)  # 合併回 batch 維度
 
-            h_path_coattn, A_coattn = self.coattn(h_cell_bag, h_path_bag, h_path_bag) # Q, K, V
+            # h_path_coattn, A_coattn = self.coattn(h_cell_bag, h_path_bag, h_path_bag) # Q, K, V
         
 
         # Gated Attention
@@ -589,7 +589,7 @@ class MCAT_Surv(nn.Module):
         return risk_score
 
 class FineTuningModel(torch.nn.Module):
-    def __init__(self, feature_extractor, survival_model, patch_batch_size=256, num_workers=8):
+    def __init__(self, feature_extractor, survival_model, patch_batch_size=256, num_workers=10):
         """
         Args:
             feature_extractor: foundation model，用於提取 patch-level 特徵，要求提供 forward_no_head 方法。

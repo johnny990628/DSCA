@@ -1,4 +1,4 @@
-task: mcat # use low and high resolutions (dual stream)
+task: fine_tuning_clam # use low and high resolutions (dual stream)
 experiment: sim # default sim
 
 # spliting
@@ -10,16 +10,16 @@ csv_path: /work/u6658716/TCGA-LUAD/DSCA/data_split/tcga_luad_merged/tcga_luad_me
 h5_dir: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-10x-s224
 slide_dir: /work/u6658716/TCGA-LUAD/DATASETS/TCGA/LUAD
 ckpt_path: /work/u6658716/TCGA-LUAD/CLAM/checkpoints/conch/pytorch_model.bin
-# lora_checkpoint: ./results-luad-hier/ple_conch_finetuning_5x_224/lora_checkpoint_epoch_3
-lora_checkpoint:
+lora_checkpoint: ./results-luad-hier/ple_conch_finetuning_20x_224/lora_checkpoint_epoch_4
+# lora_checkpoint:
 target_patch_size: 224
 
 # data
 dataset_name: tcga_luad_merged
 magnification: 10-40 # default setting, using low and high resolutions
-path_patchx20: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-20x-s224/feats-CONCH-s224/pt_files # for cellular model: wsi
-path_patchx5: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-20x-s224/cellular-HOVERNET-s224/pt_files # for cellular model: cell
-path_coordx5: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-20x-s224/patches
+path_patchx20: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-10x-s224/feats-CONCH-s224/pt_files # for cellular model: wsi
+path_patchx5: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-10x-s224/cellular-HOVERNET-s224/pt_files # for cellular model: cell
+path_coordx5: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-10x-s224/patches
 path_label: ./data_split/tcga_luad_merged/tcga_luad_merged_path_full.csv
 label_discrete: False # default setting
 bins_discrete: 4 # default setting, bins to divide survival times
@@ -30,13 +30,12 @@ num_patch_sampling: -1 # not sampling patches
 no_cuda: False
 cuda_id: 0 # use which gpu
 use_deepspeed: false
-
 # seed
 seed: 42
 
 # input dim
-# dims: 512-256-256 # for clam
-dims: 512-128-16 # for fusion
+dims: 512-256-256 # for clam
+# dims: 512-128-64 # for fusion
 cell_in_dim: 1024
 top_k: 500
 
@@ -44,7 +43,7 @@ top_k: 500
 early_fusion: coattn
 
 # output
-save_path: ./results-luad-hier/ple_conch_ef64_20x_224 # ss
+save_path: ./results-luad-hier/ple_conch_finetuning_10x_224 # ss
 save_prediction: True
 
 # Patch Embedding
@@ -76,9 +75,9 @@ reg_l1: 0.00001
 
 # training (default setting)
 batch_size: 1
-num_workers: 8
+num_workers: 4
 epochs: 150
-bp_every_iters: 20
+bp_every_iters: 338
 monitor_metrics: ci
 es_patience: 10
 es_warmup: 0

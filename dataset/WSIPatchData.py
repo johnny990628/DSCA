@@ -132,17 +132,17 @@ class WSIPatchDataset(Dataset):
         for sid in sids:
             fpath_px20 = osp.join(self.path_patchx20, sid + '.' + self.feat_format)
             fpath_px5  = osp.join(self.path_patchx5,  sid + '.' + self.feat_format)
-            fpath_cx5  = osp.join(self.path_coordx5,  sid + '.h5')
+            # fpath_cx5  = osp.join(self.path_coordx5,  sid + '.h5')
 
             feats_x20.append(read_nfeats(fpath_px20, dtype='torch'))
             feats_x5.append(read_nfeats(fpath_px5,  dtype='torch'))
-            coors_x5.append(read_coords(fpath_cx5, dtype='torch'))
+            # coors_x5.append(read_coords(fpath_cx5, dtype='torch'))
 
-        coors_x5 = rearrange_coord(coors_x5, discretization=True)
+        # coors_x5 = rearrange_coord(coors_x5, discretization=True)
 
         feats_x20 = torch.cat(feats_x20, dim=0).to(torch.float)
         feats_x5  = torch.cat(feats_x5,  dim=0).to(torch.float)
-        coors_x5  = torch.cat(coors_x5,  dim=0).to(torch.int32)
+        # coors_x5  = torch.cat(coors_x5,  dim=0).to(torch.int32)
         # assert coors_x5.shape[0] == feats_x5.shape[0]
         # assert feats_x20.shape[0] == 16 * feats_x5.shape[0]
 

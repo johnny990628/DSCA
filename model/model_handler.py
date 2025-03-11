@@ -28,7 +28,7 @@ from datasets.dataset_h5 import Whole_Slide_Bag_FP
 import time
 import datetime
 from peft import LoraConfig, get_peft_model, TaskType, PeftModel
-import deepspeed
+
 import json
 
 
@@ -185,22 +185,25 @@ class MyHandler(object):
     Handler the model train/val/test for: HierSurv
     """
     def __init__(self, cfg):
-        # set up for seed and device
-        # self.device = torch.device("cuda:0")
-        torch.cuda.set_device(cfg['cuda_id'])
+        self.use_deepspeed = cfg['use_deepspeed']
+        
+        # torch.cuda.set_device(cfg['cuda_id'])
         seed_everything(cfg['seed'])
-
-        self.rank = int(os.environ['RANK'])
         self.world_size = int(os.environ['WORLD_SIZE'])
+        self.rank = int(os.environ['RANK'])
         self.device = torch.device(f'cuda:{self.rank}')
-        # # 初始化进程组
-        # dist.init_process_group(
-        #     backend='nccl',
-        #     init_method='env://',
-        #     world_size=self.world_size,
-        #     rank=self.rank,
-        #     timeout=datetime.timedelta(seconds=7200)
-        # )
+        if self.use_deepspeed:
+                import deepspeed
+        if not self.use_deepspeed: 
+            # 初始化进程组
+            dist.init_process_group(
+                backend='nccl',
+                init_method='env://',
+                world_size=self.world_size,
+                rank=self.rank,
+                timeout=datetime.timedelta(hours=3)
+            )
+        
         # set up for path
         self.writer = SummaryWriter(cfg['save_path'])
         self.last_ckpt_path = osp.join(cfg['save_path'], 'model-last.pth')
@@ -212,28 +215,7 @@ class MyHandler(object):
         dims = [int(_) for _ in cfg['dims'].split('-')] 
 
         # set up for model
-        if cfg['task'] == 'GenericSurv':
-            cfg['scale'] = 4 if 'x20' in cfg['magnification'] else 1
-            cfg_emb_backbone = SimpleNamespace(in_dim=dims[0], out_dim=dims[1], scale=cfg['scale'], dropout=cfg['dropout'], dw_conv=cfg['emb_dw_conv'], ksize=cfg['emb_ksize'])
-            cfg_tra_backbone = SimpleNamespace(d_model=dims[1], d_out=dims[2], nhead=cfg['tra_nhead'], dropout=cfg['dropout'], num_layers=cfg['tra_num_layers'],
-                ksize=cfg['tra_ksize'], dw_conv=cfg['tra_dw_conv'], epsilon=cfg['tra_epsilon'])
-            self.model = WSIGenericNet(
-                dims, cfg['emb_backbone'], cfg_emb_backbone, cfg['tra_backbone'], cfg_tra_backbone, 
-                dropout=cfg['dropout'], pool=cfg['pool']
-            )
-            self.model.apply(init_weights) # model parameter init
-            print(self.model)
-        elif cfg['task'] == 'GenericCAPSurv':
-            cfg['magnification'] = '5x20x'
-            cfg_emb_backbone = SimpleNamespace(in_dim=dims[0], out_dim=dims[1], scale=4, dropout=cfg['dropout'], dw_conv=cfg['emb_dw_conv'], ksize=cfg['emb_ksize'])
-            cfg_tra_backbone = SimpleNamespace(d_model=dims[1], d_out=dims[2], nhead=cfg['tra_nhead'], dropout=cfg['dropout'], num_layers=cfg['tra_num_layers'],
-                ksize=cfg['tra_ksize'], dw_conv=cfg['tra_dw_conv'], epsilon=cfg['tra_epsilon'])
-            self.model = WSIGenericCAPNet(
-                dims, cfg['emb_backbone'], cfg_emb_backbone, cfg['tra_backbone'], cfg_tra_backbone, 
-                dropout=cfg['dropout'], pool=cfg['pool']
-            )
-            self.model.apply(init_weights) # model parameter init
-        elif cfg['task'] == 'HierSurv':
+        if cfg['task'] == 'HierSurv':
             scales = list(map(int, cfg['magnification'].split('-')))
             scale = int(scales[1] / scales[0])
             print(f"Scale for magnifications {scales} is {scale}")
@@ -252,18 +234,20 @@ class MyHandler(object):
         elif cfg['task'] == 'mcat':
             self.model = MCAT_Surv(dims=dims, cell_in_dim=int(cfg['cell_in_dim']), top_k=int(cfg['top_k']), fusion=str(cfg['early_fusion']))
             self.model = self.model.to(self.device)
-            # DeepSpeed 設定
-            ds_config_path = "./config/ds_config.json"
-            with open(ds_config_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)  # 讀取 JSON 檔案
-                print(data)
-            # DeepSpeed 初始化
-            self.model, self.optimizer, _, _ = deepspeed.initialize(
-                model=self.model,
-                model_parameters=self.model.parameters(),
-                config_params=ds_config_path
-            )
-            # self.model = DDP(self.model, device_ids=[self.rank], output_device=self.rank, find_unused_parameters=True)
+
+            if self.use_deepspeed:
+                ds_config_path = "./config/ds_config.json"
+                with open(ds_config_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)  # 讀取 JSON 檔案
+                    print(data)
+                # DeepSpeed 初始化
+                self.model, self.optimizer, _, _ = deepspeed.initialize(
+                    model=self.model,
+                    model_parameters=self.model.parameters(),
+                    config_params=ds_config_path
+                )
+            else:
+                self.model = DDP(self.model, device_ids=[self.rank], output_device=self.rank)
             print(f"[Setup] Early Fusion Approch: {str(cfg['early_fusion'])}")
         elif cfg['task'] == 'fine_tuning_clam':
              # ✅ 加載 Foundation Model
@@ -278,6 +262,7 @@ class MyHandler(object):
                     foundation_model,
                     cfg['lora_checkpoint']
                 )
+                self.checkpoint_epoch = int(cfg['lora_checkpoint'].split('_')[-1])
                 print(f"[Checkpoint] Load LoRA Weights from Checkpoint {cfg['lora_checkpoint']}")
             else:
                 peft_config = LoraConfig(
@@ -297,6 +282,7 @@ class MyHandler(object):
             self.model = self.model.to(self.device)
             self.model = DDP(self.model, device_ids=[self.rank], output_device=self.rank, find_unused_parameters=True)
             self.load_checkpoint(self.best_ckpt_path)
+            
             print(f"[Setup] Load All Model Successfully!")
         else:
             raise ValueError(f"Expected HierSurv/GenericSurv, but got {cfg['task']}")
@@ -321,7 +307,7 @@ class MyHandler(object):
 
         else:
             self.early_stop = None
-        self.steplr = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10, verbose=True)
+        self.steplr = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=5, verbose=True)
         self.cfg = cfg
         print_config(cfg, print_to_path=self.config_path)
 
@@ -336,6 +322,8 @@ class MyHandler(object):
     def _save_lora_checkpoint(self, epoch):
         if self.rank == 0:
             # 這裡我們假設 lora 模組附加在 feature_extractor 上
+            if self.checkpoint_epoch:
+                epoch = epoch + self.checkpoint_epoch
             lora_ckpt_dir = osp.join(self.cfg['save_path'], f"lora_checkpoint_epoch_{epoch}")
             os.makedirs(lora_ckpt_dir, exist_ok=True)
             # 由於模型經過 DDP 包裝，因此需要先取得 module
@@ -550,22 +538,23 @@ class MyHandler(object):
                     bp_collector = {'y': None, 'y_hat': None}
                     continue
                 
-                # 2.1 zero gradients buffer
-                # self.optimizer.zero_grad()
-                self.model.zero_grad()
-                # 2.2 calculate loss
-                loss = self.loss(bp_collector['y'], bp_collector['y_hat'])
-                # loss += self.loss_l1(self.model.parameters())
-                all_loss.append(loss.item())
-                print("[training epoch] training batch {}, loss: {:.6f}".format(i_batch, loss.item()))
+                if self.use_deepspeed:
+                    self.model.zero_grad()
+                    loss = self.loss(bp_collector['y'], bp_collector['y_hat'])
+                    all_loss.append(loss.item())
+                    if self.rank==0:
+                        print("[training epoch] training batch {}, loss: {:.6f}".format(i_batch, loss.item()))
+                    self.model.backward(loss)
+                    self.model.step()
+                else:
+                    self.optimizer.zero_grad()
+                    loss = self.loss(bp_collector['y'], bp_collector['y_hat'])
+                    all_loss.append(loss.item())
+                    if self.rank==0:
+                        print("[training epoch] training batch {}, loss: {:.6f}".format(i_batch, loss.item()))
+                    loss.backward()
 
-                # 2.3 backwards gradients and update networks
-                # loss.backward()
-                # self.optimizer.step()
-                self.model.backward(loss)
-                self.model.step()
                 bp_collector = {'y': None, 'y_hat': None}
-
         return collector, sum(all_loss)/len(all_loss)
 
 
@@ -595,7 +584,6 @@ class MyHandler(object):
             bp_collector = collect_tensor(bp_collector, y, y_hat)
 
             if bp_collector['y'].size(0) % bp_every_iters == 0 or bp_collector['y'].size(0)==len(train_loader):
-                # 2. backward propagation
                 if self.cfg['loss'] == 'survple' and torch.sum(bp_collector['y'] > 0).item() <= 0:
                     print("[warning] batch {}, event count <= 0, skipped.".format(i_batch))
                     bp_collector = {'y': None, 'y_hat': None}
@@ -604,8 +592,8 @@ class MyHandler(object):
                 self.optimizer.zero_grad()
                 loss = self.loss(bp_collector['y'], bp_collector['y_hat'])
                 all_loss.append(loss.item())
-                print("[training epoch] training batch {}, loss: {:.6f}".format(i_batch, loss.item()))
-
+                if self.rank==0:
+                        print("[training epoch] training batch {}, loss: {:.6f}".format(i_batch, loss.item()))
                 loss.backward()
                 self.optimizer.step()
                 bp_collector = {'y': None, 'y_hat': None}
