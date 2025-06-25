@@ -1,28 +1,27 @@
-task: fine_tuning_clam # use low and high resolutions (dual stream)
+task: HierSurv # use low and high resolutions (dual stream)
 experiment: sim # default sim
 
 # spliting
-seed_data_split: 0 # for 5-fold evaluation
-path_data_split: ./data_split/tcga_luad_merged/tcga_luad_merged-seed42-fold{}.npz
+seed_data_split: [0,1,2,3,4] # for 5-fold evaluation
+path_data_split: ./data_split/tcga_luad_ptmb_binary/tcga_luad_ptmb_binary-seed42-fold{}.npz
 
 # fine tuning
-csv_path: /work/u6658716/TCGA-LUAD/DSCA/data_split/tcga_luad_merged/tcga_luad_merged_path_full.csv
-h5_dir: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-20x-s224
+csv_path: /work/u6658716/TCGA-LUAD/DSCA/data_split/tcga_luad_ptmb_binary/tcga_luad_ptmb_binary_path_full.csv
+h5_dir: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-10x-s224
 slide_dir: /work/u6658716/TCGA-LUAD/DATASETS/TCGA/LUAD
-# ckpt_path: /work/u6658716/TCGA-LUAD/CLAM/checkpoints/conch/pytorch_model.bin
-ckpt_path: /work/u6658716/TCGA-LUAD/CLAM/checkpoints/retccl/best_ckpt.pth
-lora_checkpoint: ./results-luad-hier/ple_retccl_finetuning_20x_224/lora_checkpoint_epoch_17
-# lora_checkpoint:
-foundation_model: retccl
+ckpt_path: /work/u6658716/TCGA-LUAD/CLAM/checkpoints/conch/pytorch_model.bin
+# lora_checkpoint: ./results-luad-hier/ple_conch_finetuning_5x_224/lora_checkpoint_epoch_3
+lora_checkpoint:
 target_patch_size: 224
 
 # data
-dataset_name: tcga_luad_merged
-magnification: 10-40 # default setting, using low and high resolutions
-path_patchx20: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-10x-s224/feats-CONCH-s224/pt_files # for cellular model: wsi
-path_patchx5: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-10x-s224/cellular-HOVERNET-s224/pt_files # for cellular model: cell
-path_coordx5: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-10x-s224/patches
-path_label: ./data_split/tcga_luad_merged/tcga_luad_merged_path_full.csv
+dataset_name: tcga_luad_ptmb_binary
+magnification: 5-20 # default setting, using low and high resolutions
+cell_patchx20: 
+path_patchx20: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-5x-s224/tiles-20x-s224/feats-CONCH-s224/pt_files # for cellular model: wsi
+path_patchx5: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-5x-s224/feats-CONCH-s224/pt_files # for cellular model: cell
+path_coordx5: /work/u6658716/TCGA-LUAD/PATCHES/LUAD/tiles-5x-s224/patches
+path_label: ./data_split/tcga_luad_ptmb_binary/tcga_luad_ptmb_binary_path_full.csv
 label_discrete: False # default setting
 bins_discrete: 4 # default setting, bins to divide survival times
 feat_format: pt # default setting, the format of files storing patch features
@@ -31,21 +30,23 @@ num_patch_sampling: -1 # not sampling patches
 # CUDA
 no_cuda: False
 cuda_id: 0 # use which gpu
-use_deepspeed: false
+use_deepspeed: False
+multi_gpu: False
+
 # seed
 seed: 42
 
-# input dim
-dims: 2048-256-256 # for clam
-# dims: 512-128-64 # for fusion
+# foundation dim -> cross & gated attention -> last hidden layer -> output
+dims: 512-256-256-1 
 cell_in_dim: 1024
 top_k: 500
+isGene: True
 
 # fusion
 early_fusion: coattn
 
 # output
-save_path: ./results-luad-hier/ple_retccl_finetuning_20x_224 # ss
+save_path: ./results-ptmb-binary-luad/multi_scale/conch/conch_5x20x_224
 save_prediction: True
 
 # Patch Embedding
@@ -71,25 +72,30 @@ pool: gap # final instance pooling, max / mean / max_mean / gap, default gap.
 dropout: 0.6
 
 # loss (default setting)
-loss: survple
+loss: bce
 alpha: 0.1
 reg_l1: 0.00001
 
 # training (default setting)
 batch_size: 1
-num_workers: 4
+num_workers: 6
 epochs: 150
-bp_every_iters: 338
-monitor_metrics: ci
-es_patience: 10
+bp_every_iters: 16
+monitor_metrics: loss
+metrics: classification
+label_column: ptmb
+es_patience: 20
 es_warmup: 0
 es_start_epoch: 0
 es_verbose: True
+# pos_weight: 2 # kras
+# pos_weight: 7 # egfr
+pos_weight: 1.0 # tp53
 
 # optimizer and learning rate (default setting)
 opt: adam
 weight_decay: 0.0001
-lr: 0.00001
+lr: 0.0001
 opt_eps: null
 opt_betas: null
 opt_momentum: null

@@ -206,37 +206,72 @@ def read_nfeats(path: str, dtype: str = 'torch'):
     else:
         return nfeats
 
-def save_prediction(pids, y_true, y_pred, save_path):
-    r"""Save surival prediction.
+import numpy as np
+import pandas as pd
+from torch import Tensor
+from scipy.special import expit  # sigmoid
+
+def save_prediction(pids, y_true, y_pred, save_path, metrics='regression'):
+    r"""
+    Save prediction results based on task type.
 
     Args:
-        y_true (Tensor or ndarray): true labels.
-        y_pred (Tensor or ndarray): predicted values.
-        save_path (string): path to save.
-
-    If it is a discrete model:
-        y: [B, 2] (col1: y_t, col2: y_c)
-        y_hat: [B, BINS]
-    else:
-        y: [B, 1]
-        y_hat: [B, 1]
+        pids (list): patient IDs.
+        y_true (Tensor or ndarray): true labels or targets.
+        y_pred (Tensor or ndarray): predicted values (logits, probabilities, risk scores, etc.).
+        save_path (str): CSV path to save results.
+        metrics (str): one of ['classification', 'cindex', 'regression'].
     """
+
+    # Tensor to numpy
     if isinstance(y_true, Tensor):
-        y_true = y_true.numpy()
+        y_true = y_true.detach().cpu().numpy()
     if isinstance(y_pred, Tensor):
-        y_pred = y_pred.numpy()
-    
-    print(y_pred.shape, y_true.shape)
-    if y_true.shape[1] == 1:
+        y_pred = y_pred.detach().cpu().numpy()
+
+    print("y_pred.shape:", y_pred.shape)
+    print("y_true.shape:", y_true.shape)
+
+    # Expand y_true to 2D if necessary
+    if len(y_true.shape) == 1:
+        y_true = np.expand_dims(y_true, axis=1)
+
+    if metrics == 'classification':
+        # Assume binary classification with logits
         y_pred = np.squeeze(y_pred)
+        y_prob = expit(y_pred)
+        y_label = (y_prob >= 0.5).astype(int)
         y_true = np.squeeze(y_true)
-        df = pd.DataFrame({'patient_id': pids, 'pred': y_pred, 'true': y_true}, columns=['patient_id', 'true', 'pred'])
-    elif y_true.shape[1] == 2:
+
+        df = pd.DataFrame({
+            'patient_id': pids,
+            'true': y_true,
+            'pred': y_label,
+            'y_prob': y_prob
+        }, columns=['patient_id', 'true', 'pred', 'y_prob'])
+
+    elif metrics == 'cindex':
+        # Discrete-time survival prediction
+        if y_true.shape[1] != 2:
+            raise ValueError("For 'cindex', y_true should have shape [B, 2] (t, e).")
         bins = y_pred.shape[1]
         y_t, y_e = y_true[:, [0]], 1 - y_true[:, [1]]
         survival = np.cumprod(1 - y_pred, axis=1)
         risk = np.sum(survival, axis=1, keepdims=True)
-        arr = np.concatenate((y_t, y_e, risk, survival), axis=1) # [B, 3+BINS]
-        df = pd.DataFrame(arr, columns=['t', 'e', 'risk'] + ['surf_%d' % (_ + 1) for _ in range(bins)])
+        arr = np.concatenate((y_t, y_e, risk, survival), axis=1)
+        df = pd.DataFrame(arr, columns=['t', 'e', 'risk'] + [f'surf_{i+1}' for i in range(bins)])
         df.insert(0, 'patient_id', pids)
+
+    elif metrics == 'regression':
+        y_true = np.squeeze(y_true)
+        y_pred = np.squeeze(y_pred)
+        df = pd.DataFrame({
+            'patient_id': pids,
+            'true': y_true,
+            'pred': y_pred
+        }, columns=['patient_id', 'true', 'pred'])
+
+    else:
+        raise ValueError(f"Unsupported metrics value: {metrics}")
+
     df.to_csv(save_path, index=False)

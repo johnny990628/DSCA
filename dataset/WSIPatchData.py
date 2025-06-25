@@ -96,25 +96,55 @@ class WSIPatchDataset(Dataset):
         path_patchx20 (string): Path of patch feature at 20x magnification. 
         path_patchx5 (string): Path of patch feature at 5x magnification. 
     """
-    def __init__(self, patient_ids, path_patchx20: str, path_patchx5: str, path_coordx5:str, 
-        path_label: str, magnification: list, label_discrete:bool=False, bins_discrete:int=4, feat_format:str='pt'):
+    def __init__(self, patient_ids, cell_patchx20:str, path_patchx20: str, path_patchx5: str, path_coordx5:str, 
+        path_label: str, magnification: list, label_discrete:bool=False, bins_discrete:int=4, feat_format:str='pt', label_column:str='y', task_type:str='survival'):
         super(WSIPatchDataset, self).__init__()
+        self.cell_patchx20 = cell_patchx20
         self.path_patchx20 = path_patchx20
         self.path_patchx5  = path_patchx5
         self.path_coordx5  = path_coordx5
         self.feat_format   = feat_format
         self.magnification = magnification
+        self.task_type = task_type
         
+        if task_type == 'cindex':
+            SurvLabel = SurvLabelTransformer(path_label)
+            if label_discrete:
+                self.label_column = ['y_t', 'y_c']
+                SurvLabel.to_discrete(bins=bins_discrete, column_label_t=self.label_column[0], column_label_c=self.label_column[1])
+            else:
+                self.label_column = ['y']
+                SurvLabel.to_continuous(column_label=self.label_column[0])
 
-        SurvLabel = SurvLabelTransformer(path_label)
-        if label_discrete:
-            self.label_column = ['y_t', 'y_c']
-            SurvLabel.to_discrete(bins=bins_discrete, column_label_t=self.label_column[0], column_label_c=self.label_column[1])
+            self.pids, self.pid2sids, self.pid2label = SurvLabel.collect_slide_info(patient_ids)
+        elif task_type == 'classification':
+            label_df = pd.read_csv(path_label, dtype={'patient_id': str, 'pathology_id': str})
+            label_df = label_df[label_df['patient_id'].isin(patient_ids)]
+            self.pids = label_df['patient_id'].unique().tolist()
+            self.pid2sids = {
+                pid: label_df[label_df['patient_id'] == pid]['pathology_id'].tolist()
+                for pid in self.pids
+            }
+            self.pid2label = {
+                pid: int(label_df[label_df['patient_id'] == pid].iloc[0][label_column])
+                for pid in self.pids
+            }
+            self.label_column = [label_column]
+        elif task_type == 'regression':
+            label_df = pd.read_csv(path_label, dtype={'patient_id': str, 'pathology_id': str})
+            label_df = label_df[label_df['patient_id'].isin(patient_ids)]
+            self.pids = label_df['patient_id'].unique().tolist()
+            self.pid2sids = {
+                pid: label_df[label_df['patient_id'] == pid]['pathology_id'].tolist()
+                for pid in self.pids
+            }
+            self.pid2label = {
+                pid: np.log1p(float(label_df[label_df['patient_id'] == pid].iloc[0][label_column]))
+                for pid in self.pids
+            }
+            self.label_column = [label_column]
         else:
-            self.label_column = ['y']
-            SurvLabel.to_continuous(column_label=self.label_column[0])
-
-        self.pids, self.pid2sids, self.pid2label = SurvLabel.collect_slide_info(patient_ids)
+            raise ValueError(f"Unsupported task_type: {task_type}")
 
         self.summary()
 
@@ -127,26 +157,84 @@ class WSIPatchDataset(Dataset):
     def __getitem__(self, index):
         pid = self.pids[index]
         sids = self.pid2sids[pid]
-        feats_x20, feats_x5, coors_x5 = [], [], []
+        cell_feats_x20, feats_x20, feats_x5, coors_x5 = [], [], [], []
         
+        for sid in sids:
+            fcell_px20 = osp.join(self.cell_patchx20, sid + '.' + self.feat_format)
+            fpath_px20 = osp.join(self.path_patchx20, sid + '.' + self.feat_format)
+            fpath_px5  = osp.join(self.path_patchx5,  sid + '.' + self.feat_format)
+            fpath_cx5  = osp.join(self.path_coordx5,  sid + '.h5')
+
+            cell_feats_x20.append(read_nfeats(fcell_px20, dtype='torch'))
+            feats_x20.append(read_nfeats(fpath_px20, dtype='torch'))
+            feats_x5.append(read_nfeats(fpath_px5,  dtype='torch'))
+            coors_x5.append(read_coords(fpath_cx5, dtype='torch'))
+
+        coors_x5 = rearrange_coord(coors_x5, discretization=True)
+
+        cell_feats_x20 = torch.cat(cell_feats_x20, dim=0).to(torch.float)
+        feats_x20 = torch.cat(feats_x20, dim=0).to(torch.float)
+        feats_x5  = torch.cat(feats_x5,  dim=0).to(torch.float)
+        coors_x5  = torch.cat(coors_x5,  dim=0).to(torch.int32)
+        assert coors_x5.shape[0] == feats_x5.shape[0]
+        # assert feats_x20.shape[0] == 16 * feats_x5.shape[0]
+
+        if self.task_type == 'classification':
+            y = torch.tensor(self.pid2label[pid], dtype=torch.long) # for cross entropy loss
+        elif self.task_type == 'cindex':
+            y = torch.tensor(self.pid2label[pid], dtype=torch.float)  # for Cox/NLL loss
+        elif self.task_type == 'regression':
+            y = torch.tensor(self.pid2label[pid], dtype=torch.float).unsqueeze(0) 
+        return cell_feats_x20, feats_x20, feats_x5, coors_x5, y
+
+class WSIPatchDatasetNoCell(WSIPatchDataset):
+    def __init__(self, patient_ids, path_patchx20: str, path_patchx5: str, path_coordx5: str,
+                 path_label: str, magnification: list, label_discrete: bool = False, 
+                 bins_discrete: int = 4, feat_format: str = 'pt', label_column: str = 'y', 
+                 task_type: str = 'survival'):
+        super().__init__(
+            patient_ids=patient_ids,
+            cell_patchx20=None,  # placeholder, not used in this subclass
+            path_patchx20=path_patchx20,
+            path_patchx5=path_patchx5,
+            path_coordx5=path_coordx5,
+            path_label=path_label,
+            magnification=magnification,
+            label_discrete=label_discrete,
+            bins_discrete=bins_discrete,
+            feat_format=feat_format,
+            label_column=label_column,
+            task_type=task_type
+        )
+
+    def __getitem__(self, index):
+        pid = self.pids[index]
+        sids = self.pid2sids[pid]
+        feats_x20, feats_x5, coors_x5 = [], [], []
+
         for sid in sids:
             fpath_px20 = osp.join(self.path_patchx20, sid + '.' + self.feat_format)
             fpath_px5  = osp.join(self.path_patchx5,  sid + '.' + self.feat_format)
-            # fpath_cx5  = osp.join(self.path_coordx5,  sid + '.h5')
+            fpath_cx5  = osp.join(self.path_coordx5,  sid + '.h5')
 
             feats_x20.append(read_nfeats(fpath_px20, dtype='torch'))
-            feats_x5.append(read_nfeats(fpath_px5,  dtype='torch'))
-            # coors_x5.append(read_coords(fpath_cx5, dtype='torch'))
+            feats_x5.append(read_nfeats(fpath_px5, dtype='torch'))
+            coors_x5.append(read_coords(fpath_cx5, dtype='torch'))
 
-        # coors_x5 = rearrange_coord(coors_x5, discretization=True)
+        coors_x5 = rearrange_coord(coors_x5, discretization=True)
 
         feats_x20 = torch.cat(feats_x20, dim=0).to(torch.float)
         feats_x5  = torch.cat(feats_x5,  dim=0).to(torch.float)
-        # coors_x5  = torch.cat(coors_x5,  dim=0).to(torch.int32)
-        # assert coors_x5.shape[0] == feats_x5.shape[0]
-        # assert feats_x20.shape[0] == 16 * feats_x5.shape[0]
+        coors_x5  = torch.cat(coors_x5,  dim=0).to(torch.int32)
 
-        y = torch.Tensor(self.pid2label[pid]).to(torch.float)
+        assert coors_x5.shape[0] == feats_x5.shape[0]
+
+        if self.task_type == 'classification':
+            y = torch.tensor(self.pid2label[pid], dtype=torch.long)  # cross entropy
+        elif self.task_type == 'cindex':
+            y = torch.tensor(self.pid2label[pid], dtype=torch.float)  # for Cox/NLL loss
+        elif self.task_type == 'regression':
+            y = torch.tensor(self.pid2label[pid], dtype=torch.float).unsqueeze(0)
 
         return feats_x20, feats_x5, coors_x5, y
 

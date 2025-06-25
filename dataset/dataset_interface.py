@@ -1,10 +1,11 @@
-from .WSIPatchData import WSIPatchDataset
+from .WSIPatchData import WSIPatchDataset, WSIPatchDatasetNoCell
 from .WSIPatchData import WSIOnePatchDataset
 
 
 def prepare_dataset(patient_ids, cfg, magnification='5x20x'):
     # assert magnification in ['x5', 'x20', 'x5_x20']
     # if magnification == 'x5_x20':
+    cell_patchx20 = cfg['cell_patchx20'] if cfg['cell_patchx20'] else None
     path_patchx20 = cfg['path_patchx20']
     path_patchx5 = cfg['path_patchx5']
     path_coordx5 = cfg['path_coordx5']
@@ -12,12 +13,25 @@ def prepare_dataset(patient_ids, cfg, magnification='5x20x'):
     label_discrete = cfg['label_discrete']
     bins_discrete = cfg['bins_discrete']
     feat_format = cfg['feat_format']
-    dataset = WSIPatchDataset(
-        patient_ids, path_patchx20, path_patchx5, path_coordx5, path_label, magnification,
-        label_discrete=label_discrete,
-        bins_discrete=bins_discrete,
-        feat_format=feat_format,
-    )
+    task_type = cfg['metrics']
+    label_column = cfg['label_column']
+    if cell_patchx20:
+        dataset = WSIPatchDataset(
+            patient_ids, cell_patchx20, path_patchx20, path_patchx5, path_coordx5, path_label, magnification,
+            label_discrete=label_discrete,
+            bins_discrete=bins_discrete,
+            feat_format=feat_format,task_type=task_type,
+            label_column=label_column
+        )
+    else:
+        dataset = WSIPatchDatasetNoCell(
+            patient_ids, path_patchx20, path_patchx5, path_coordx5, path_label, magnification,
+            label_discrete=label_discrete,
+            bins_discrete=bins_discrete,
+            feat_format=feat_format,task_type=task_type,
+            label_column=label_column
+        )
+    
     # else:
     #     if magnification == 'x20' and cfg['emb_backbone'] == 'identity':
     #         path_ref_coord = cfg['path_coordx20']

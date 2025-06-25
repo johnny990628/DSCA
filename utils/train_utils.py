@@ -1,10 +1,11 @@
 import torch
 import numpy as np
+import os
 
 
 class EarlyStopping:
     """Early stops the training if validation loss doesn't improve after a given patience."""
-    def __init__(self, warmup=5, patience=15, start_epoch=0, verbose=False):
+    def __init__(self, warmup=5, patience=15, start_epoch=0, verbose=False, use_deepspeed=False):
         """
         Args:
             patience (int): How long to wait after last time validation loss improved.
@@ -21,6 +22,7 @@ class EarlyStopping:
         self.best_score = None
         self.early_stop = False
         self.val_loss_min = np.Inf
+        self.use_deepspeed = use_deepspeed
 
     def __call__(self, epoch, val_loss, model, ckpt_name = 'checkpoint.pt'):
 
@@ -51,10 +53,9 @@ class EarlyStopping:
         torch.save(model.state_dict(), ckpt_name)
         self.val_loss_min = val_loss
 
-
-class Monitor_CIndex:
+class Monitor_Metrics:
     """Early stops the training if validation loss doesn't improve after a given patience."""
-    def __init__(self, warmup=5, patience=15, start_epoch=0, verbose=False):
+    def __init__(self, warmup=5, patience=15, start_epoch=0, verbose=False, monitor_metrics='auc', use_deepspeed=False):
         """
         Args:
             patience (int): How long to wait after last time validation loss improved.
@@ -71,18 +72,18 @@ class Monitor_CIndex:
         self.best_score = None
         self.early_stop = False
         self.best_score = None
-        self.val_cindex_max = 0
+        self.val_metric_max = 0
+        self.use_deepspeed = use_deepspeed
+        self.monitor_metrics = monitor_metrics
 
-    def __call__(self, epoch, val_cindex, model, ckpt_name:str='checkpoint.pt'):
-
-        score = val_cindex
-
+    def __call__(self, epoch, val_metric, model, ckpt_name:str='checkpoint.pt'):
+        score = val_metric
         if self.best_score is None:
             self.best_score = score
-            self.save_checkpoint(val_cindex, model, ckpt_name)
+            self.save_checkpoint(val_metric, model, ckpt_name)
         elif score > self.best_score:
             self.best_score = score
-            self.save_checkpoint(val_cindex, model, ckpt_name)
+            self.save_checkpoint(val_metric, model, ckpt_name)
             self.counter = 0
         else:
             self.counter += 1
@@ -93,9 +94,9 @@ class Monitor_CIndex:
     def if_stop(self, **kws):
         return self.early_stop
 
-    def save_checkpoint(self,val_cindex, model, ckpt_name):
-        '''Saves model when validation Cindex increase.'''
+    def save_checkpoint(self,val_metric, model, ckpt_name):
+        '''Saves model when validation metrics increase.'''
         if self.verbose:
-            print(f'Validation CIndex increased ({self.val_cindex_max:.3f} --> {val_cindex:.3f}).  Saving model ...')
+            print(f'Validation {self.monitor_metrics} increased ({self.val_metric_max:.3f} --> {val_metric:.3f}).  Saving model ...')
         torch.save(model.state_dict(), ckpt_name)
-        self.val_cindex_max = val_cindex
+        self.val_metric_max = val_metric

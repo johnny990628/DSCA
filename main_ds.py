@@ -14,7 +14,7 @@ from utils import print_config
 import os
 import torch
 import datetime
-# import deepspeed
+import deepspeed
 
 
 def main(config):
@@ -50,7 +50,7 @@ def get_args():
     parser.add_argument('--multi_run', action='store_true', help='flag: multi run')
     parser.add_argument('--local_rank', type=int, default=-1, help='local rank for distributed training')
      # DeepSpeed 相關參數
-    # parser = deepspeed.add_config_arguments(parser)
+    parser = deepspeed.add_config_arguments(parser)
     
     args = vars(parser.parse_args())
     return args
@@ -105,6 +105,11 @@ if __name__ == '__main__':
     cfg = get_args()
     config = get_config(cfg['config'])
     print_config(config)
+
+    if config['use_deepspeed']:
+        import deepspeed
+        torch.cuda.set_device(cfg['local_rank'])
+        deepspeed.init_distributed()
            
     if cfg['multi_run']:
         multi_run_main(config)
