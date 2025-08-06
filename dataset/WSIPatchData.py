@@ -307,3 +307,69 @@ class WSIOnePatchDataset(Dataset):
         # force to have a consistent behaviour for two dataset classes
         place_temp1 = torch.Tensor([0])
         return feats, place_temp1, ref_coord, y
+
+class WSIDataset(torch.utils.data.Dataset):
+    def __init__(self, csv_path, h5_dir, slide_dir, slide_ext='.svs', custom_transforms=None, pids=None):
+        self.csv_path = csv_path
+        self.h5_dir = h5_dir
+        self.slide_dir = slide_dir
+        self.slide_ext = slide_ext
+        self.custom_transforms = custom_transforms
+        
+        if isinstance(csv_path, str):
+            self.full_data = pd.read_csv(csv_path, dtype={'patient_id': str, 'pathology_id': str})
+        elif isinstance(csv_path, pd.DataFrame):
+            self.full_data = csv_path.copy()
+        else:
+            raise ValueError("csv_input 必須為 CSV 檔案路徑或是 pandas DataFrame")
+            
+        # 收集全部病理切片的信息
+        if pids is not None:
+            self.full_data = self.full_data[self.full_data["patient_id"].isin(pids)]
+        
+        self.slide_data = self.load_slide_data()
+
+    def load_slide_data(self):
+        """Load slide data and survival information from CSV using SurvLabelTransformer"""
+        # 初始化 SurvLabelTransformer
+        surv_label = SurvLabelTransformer(self.csv_path, verbose=True)
+        
+        # 轉換為連續的生存標籤
+        patient_data = surv_label.to_continuous(column_label='y')
+        
+        # 準備返回的數據
+        slide_data = []
+        for _, row in self.full_data.iterrows():
+            pathology_id = row['pathology_id']
+            patient_id = row['patient_id']
+            
+            # 獲取對應病人的標籤
+            pat_idx = patient_data[patient_data['patient_id'] == patient_id].index[0]
+            label = patient_data.loc[pat_idx, 'y']
+            
+            slide_data.append((pathology_id, label))
+            
+        print(f"Loaded {len(slide_data)} slides with survival data")
+        return slide_data
+
+    def __len__(self):
+        return len(self.slide_data)
+
+    def __getitem__(self, idx):
+        slide_id, label = self.slide_data[idx]
+        h5_path = os.path.join(self.h5_dir, 'patches', f"{slide_id}.h5")
+        slide_path = os.path.join(self.slide_dir, f"{slide_id}{self.slide_ext}")
+        
+        # 使用Whole_Slide_Bag_FP加載WSI
+        # wsi = openslide.open_slide(slide_path)
+        wsi_dataset = Whole_Slide_Bag_FP(file_path=h5_path, wsi_path=slide_path, custom_transforms=self.custom_transforms)
+
+        # 確保數據格式正確
+        if len(wsi_dataset) > 0:
+            first_item = wsi_dataset[0]
+            if not isinstance(first_item[0], torch.Tensor):
+                raise ValueError(f"Expected torch.Tensor, got {type(first_item[0])}")
+            print("Sample tensor shape:", first_item[0].shape)
+    
+        
+        return wsi_dataset, torch.tensor(label, dtype=torch.float32)
