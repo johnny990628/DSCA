@@ -17,6 +17,7 @@ from utils import *
 from loss import create_survloss, loss_reg_l1
 from optim import create_optimizer
 from dataset import prepare_dataset
+from dataset import WSIDataset
 from eval import evaluator
 from loss.loss_interface import NLLLoss
 
